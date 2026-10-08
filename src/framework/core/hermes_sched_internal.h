@@ -3,7 +3,7 @@
 
 /* Scheduler hooks shared between framework modules (hermes_thread.c,
  * hermes_sem.c, and -- for hermes_runtime_alloc/_free only --
- * src/framework/devices/hermes_device_gpio.h). Not part of the
+ * device constructors such as modules/gpio/gpio.h). Not part of the
  * HERMESPY-facing API: no .hepy program should ever call these directly. */
 
 #include "hermes_thread.h"

@@ -2,6 +2,7 @@
 #include "arch.h"
 #include "mempool.h"
 #include "devicekind.h"
+#include "module.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -296,7 +297,7 @@ static void emit_func_prototype(StrBuf *sb, Node *fn) {
             Node *param = params->items[i];
             /* A `device` parameter has no recognizable constructor call to
              * infer a kind from, so it always falls back to the generic
-             * base type -- usable for device_kind()/device_name(), not for
+             * base type -- usable for device_name()/device_kind_name(), not for
              * .method() (see the device-kind tracking comment above). */
             const char *type_name = strcmp(param->as.param.type_name, "device") == 0
                 ? "hermes_device_t *" : param->as.param.type_name;
@@ -331,9 +332,13 @@ char *codegen_generate(Node *program) {
              * markers (e.g. `import light`) are build directives consumed
              * by hepyc's driver, not real C headers -- see arch.h/mempool.h */
             const char *mod = item->as.import_stmt.module_name;
-            if (hermes_arch_lookup(mod) == NULL && hermes_mempool_lookup(mod) == NULL) {
-                sb_appendf(&sb, "#include \"%s.h\"\n", mod);
-            }
+            if (hermes_arch_lookup(mod) != NULL || hermes_mempool_lookup(mod) != NULL) continue;
+            /* a module (modules/<name>/, already loaded by main.c before
+             * codegen) is included through the modules dir, which hepyc
+             * adds as -I: `#include "<name>/<header>"` */
+            const HermesModule *m = hermes_module_find(mod);
+            if (m) sb_appendf(&sb, "#include \"%s/%s\"\n", m->name, m->header);
+            else sb_appendf(&sb, "#include \"%s.h\"\n", mod);
         }
     }
     sb_append(&sb, "\n");

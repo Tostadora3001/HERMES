@@ -11,7 +11,10 @@ Entorno y motor para la programación simplificada de microcontroladores.
 - Runtime propio de hilos y semáforos: `docs/raw/hermes_threads.en.md`.
 - Paralelismo real multinúcleo: `docs/raw/hermes_parallel.en.md`.
 - Perfiles de memoria estáticos (light/medium/heavy): `docs/raw/hermes_mempool.en.md`.
-- Devices (internos/externos) y sintaxis de método: `docs/raw/hermes_devices.en.md`.
+- Devices (internos/externos), registro de devices y sintaxis de método: `docs/raw/hermes_devices.en.md`.
+- Módulos de hardware (`modules/<nombre>/`, `module.hmod`): `docs/raw/hermes_modules.en.md`.
+- Capa de drivers (timer, GPIO, UART) y enlazado automático: `docs/raw/hermes_drivers.en.md`.
+- Índice de todos los `import` disponibles: `docs/raw/hermes_imports.es.md`.
 
 ## Estado actual
 
@@ -51,6 +54,8 @@ gcc -std=c11 -Wall -Wextra -Isrc/engine/compiler \
     src/engine/compiler/ast.c src/engine/compiler/parser.c \
     src/engine/compiler/codegen.c src/engine/compiler/arch.c \
     src/engine/compiler/mempool.c src/engine/compiler/devicekind.c \
+    src/engine/compiler/module.c src/engine/compiler/corelib.c \
+    src/engine/compiler/repo.c \
     -o build/hepyc
 ```
 
@@ -67,9 +72,13 @@ ctest
 
 ```sh
 ./build/hepyc examples/factorial.hepy -o build/factorial.c \
-    --compile build/factorial -I src/useful
+    --compile build/factorial
 ./build/factorial
 ```
+
+`hepyc` añade por sí mismo los `-I` del framework y enlaza lo que pide cada
+import (runtime de hilos, drivers, módulos): no hace falta `--src` ni `-I`
+para nada que venga con HERMES.
 
 ## Generar la documentación en PDF
 

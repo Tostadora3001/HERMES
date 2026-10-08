@@ -3,7 +3,9 @@
 
 const HermesArchProfile HERMES_ARCH_PROFILES[] = {
     { "native", "gcc",     "-pthread",              "hermes_ctx_x86_64.S", ""     },
-    { "avr",    "avr-gcc", "-mmcu=atmega328p",      "hermes_ctx_avr.S",    ".elf" },
+    /* F_CPU: the Uno's 16 MHz crystal -- the timer and UART drivers
+     * derive their register values from it (src/framework/drivers). */
+    { "avr",    "avr-gcc", "-mmcu=atmega328p -DF_CPU=16000000UL -Os", "hermes_ctx_avr.S", ".elf" },
 };
 const int HERMES_ARCH_PROFILE_COUNT = sizeof(HERMES_ARCH_PROFILES) / sizeof(HERMES_ARCH_PROFILES[0]);
 

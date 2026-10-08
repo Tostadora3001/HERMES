@@ -1,0 +1,7 @@
+# Modulo gpio: un pin digital como device (ver gpio.h y docs/raw/hermes_modules.en.md)
+name        = gpio
+description = Pin digital de entrada/salida (numeracion Arduino Uno: D0-D13, A0-A5 = 14-19)
+archs       = native avr
+drivers     = gpio
+device      = gpio ctor=gpio type=hermes_device_gpio_handle_t
+device      = gpio ctor=gpio_in type=hermes_device_gpio_handle_t

@@ -5,6 +5,9 @@
 #include "hermes_ctx.h"
 #include "hermes_device.h"
 
+/* Device class shared by every thread (defined in hermes_thread.c). */
+extern hermes_device_class_t hermes_device_class_thread;
+
 typedef enum {
     HERMES_THREAD_READY,
     HERMES_THREAD_RUNNING,
@@ -50,7 +53,8 @@ typedef struct hermes_thread {
      * thread is never in both at once, so one field suffices. */
     struct hermes_thread *queue_next;
 
-    struct hermes_thread *all_next; /* linkage in the list of all created threads */
+    /* (No list of all threads here: every thread, main included, is in
+     * the thread kind's device list -- hermes_device_class_thread.) */
 } hermes_thread_t;
 
 typedef struct {
@@ -59,8 +63,26 @@ typedef struct {
     const char *name;  /* NULL => "thread" */
 } hermes_thread_attr_t;
 
+/* Defaults for thread_start()/hermes_thread_create(). Per target: the
+ * host values don't fit an ATmega328P's 2 KB of RAM at all (a single
+ * thread_start() aborted there -- found once the UART driver made AVR
+ * output visible). The AVR stack covers the 18 bytes a context switch
+ * saves plus interrupt frames (timer/UART ISRs run on whatever stack is
+ * current) plus a few call levels. Override with -D if needed. */
+#ifndef HERMES_THREAD_DEFAULT_HEAP_SIZE
+#if defined(__AVR__)
+#define HERMES_THREAD_DEFAULT_HEAP_SIZE  64ul
+#else
 #define HERMES_THREAD_DEFAULT_HEAP_SIZE  (4ul  * 1024ul)
+#endif
+#endif
+#ifndef HERMES_THREAD_DEFAULT_STACK_SIZE
+#if defined(__AVR__)
+#define HERMES_THREAD_DEFAULT_STACK_SIZE 384ul
+#else
 #define HERMES_THREAD_DEFAULT_STACK_SIZE (16ul * 1024ul)
+#endif
+#endif
 
 /* Automatic tier: sensible defaults, scheduling handled entirely by the
  * runtime from here on. */
@@ -75,6 +97,13 @@ hermes_thread_t *hermes_thread_create_ex(hermes_thread_fn entry, long arg,
 void *hermes_thread_alloc(hermes_thread_t *t, size_t size);
 
 void hermes_thread_yield(void);
+
+/* Stops `t` for good: it never runs again and threads joining it go on.
+ * On the calling thread itself it doesn't return (like the thread's
+ * function returning). No-op on `main` (the program's root: it ends by
+ * returning from main()) and on an already terminated thread. The
+ * thread's memory is not reclaimed (as for any finished thread). */
+void hermes_thread_abort(hermes_thread_t *t);
 void hermes_thread_join(hermes_thread_t *t);
 hermes_thread_t *hermes_thread_current(void);
 

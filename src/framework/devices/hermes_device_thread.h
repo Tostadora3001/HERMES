@@ -26,4 +26,9 @@ static inline void device_thread_join(hermes_thread_t *t) {
     hermes_thread_join(t);
 }
 
+/* Mandatory device abort (see hermes_device.h): `t.abort()`. */
+static inline void device_thread_abort(hermes_thread_t *t) {
+    hermes_thread_abort(t);
+}
+
 #endif
