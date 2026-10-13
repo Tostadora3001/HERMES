@@ -23,7 +23,7 @@
 
 #include "hermes_device.h"
 #include "hermes_drv_gpio.h"
-#include "hermes_sched_internal.h" /* hermes_runtime_alloc: same pool policy as threads/semaphores */
+#include "hermes_sched_internal.h" /* hermes_runtime_alloc: same allocator as threads/semaphores */
 #include <stdbool.h>
 #include <stdlib.h>
 
@@ -44,7 +44,7 @@ static inline void device_gpio_abort(hermes_device_gpio_handle_t g) {
 
 /* Device class (see hermes_device.h): `static` via the macro is fine here,
  * only the generated .c includes this header (one copy). Per-kind limit =
- * every pin the driver knows (D0-D13 + A0-A5). */
+ * every pin of the board (Uno: D0-D13 + A0-A5; Mega: D0-D53 + A0-A15). */
 HERMES_DEVICE_CLASS(gpio, hermes_device_gpio_handle_t, HERMES_GPIO_PIN_COUNT);
 
 static inline hermes_device_gpio_handle_t hermes_gpio_device_new(long pin, hermes_gpio_mode_t mode) {

@@ -5,11 +5,13 @@ add_executable(hepyc
     parser.c
     codegen.c
     arch.c
-    mempool.c
+    board.c
+    threadprofile.c
     devicekind.c
     module.c
     corelib.c
     repo.c
+    diagnostics.c
 )
 
 target_include_directories(hepyc PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

@@ -16,6 +16,19 @@
  * callee-saved rbx/rbp/r12-r15 in hermes_ctx_x86_64.S.
  */
 
+/* Return address size: 2 bytes on chips with up to 128 KB of flash
+ * (ATmega328P), 3 on bigger ones (ATmega2560: avr-gcc defines
+ * __AVR_3_BYTE_PC__), where CALL/RET push/pop one byte more. Only the fake
+ * frame built by hermes_ctx_make depends on it; hermes_ctx_switch's
+ * push/pop + ret work the same. Function pointers stay 16 bits on the
+ * ATmega2560 (word address; avr-gcc uses stubs beyond 128 KB), so the
+ * extra, highest byte of the entry address is always 0. */
+#ifdef __AVR_3_BYTE_PC__
+#define HERMES_PC_BYTES 3
+#else
+#define HERMES_PC_BYTES 2
+#endif
+
 #define SPL_IO 0x3d
 #define SPH_IO 0x3e
 #define SREG_IO 0x3f
@@ -102,14 +115,21 @@ hermes_ctx_make:
      *                                 hermes_ctx_switch (r29,r28,r17..r2)
      *   final_sp+19                : entry address HIGH byte (PCH)
      *   final_sp+20                : entry address LOW byte  (PCL)
+     * With a 3-byte PC (HERMES_PC_BYTES 3) the return address has one
+     * more byte, the highest, in front: final_sp+19 = 0 (PC bits 16-21),
+     * +20 = PCH, +21 = PCL; final_sp = stack_base - 22.
      */
     movw r26, r22         /* X = stack_base */
-    sbiw r26, 21          /* X = final_sp = stack_base - 21 */
+    sbiw r26, 19 + HERMES_PC_BYTES  /* X = final_sp */
     movw r18, r26         /* r18:r19 = final_sp */
 
     adiw r26, 19          /* X = final_sp + 19 */
-    st   X+, r17          /* final_sp+19 = entry HIGH byte */
-    st   X,  r16          /* final_sp+20 = entry LOW byte */
+#if HERMES_PC_BYTES == 3
+    clr  r0
+    st   X+, r0           /* final_sp+19 = entry bits 16-21 (always 0) */
+#endif
+    st   X+, r17          /* entry HIGH byte */
+    st   X,  r16          /* entry LOW byte */
 
     movw r26, r18         /* X = final_sp */
     adiw r26, 1           /* X = final_sp + 1 (first saved-register slot) */

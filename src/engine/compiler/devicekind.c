@@ -38,11 +38,11 @@ const HermesDeviceKind *hermes_devicekind_lookup_constructor(const char *constru
 
 int hermes_devicekind_register(const char *constructor_name, const char *kind, const char *c_type) {
     if (hermes_devicekind_lookup_constructor(constructor_name)) {
-        fprintf(stderr, "hepyc: el constructor de device '%s' ya esta definido\n", constructor_name);
+        fprintf(stderr, "hepyc: device constructor '%s' is already defined\n", constructor_name);
         return 0;
     }
     if (g_module_kind_count >= HERMES_MAX_MODULE_DEVICE_KINDS) {
-        fprintf(stderr, "hepyc: demasiados constructores de device en modulos (maximo %d)\n",
+        fprintf(stderr, "hepyc: too many device constructors in modules (at most %d)\n",
                 HERMES_MAX_MODULE_DEVICE_KINDS);
         return 0;
     }

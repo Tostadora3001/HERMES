@@ -1,0 +1,6 @@
+# Placa Arduino Mega 2560 (ver hermes_board.h y docs/raw/hermes_boards.en.md)
+name        = mega
+description = Arduino Mega 2560 (ATmega2560, 16 MHz): D0-D53, A0-A15 = 54-69
+arch        = avr
+mcu         = atmega2560
+f_cpu       = 16000000

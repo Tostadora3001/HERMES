@@ -23,6 +23,10 @@ typedef enum {
     TOK_RANGE,
     TOK_RETURN,
     TOK_IMPORT,
+    TOK_PARALLEL,    /* parallel for ... */
+    TOK_LOCAL,       /* local <tipo> <nombre> (solo en parallel for) */
+    TOK_GLOBAL,      /* global[(op)] <tipo> <nombre> (solo en parallel for) */
+    TOK_INSERT_C,    /* insert_C: + indented block of plain C (Token.raw) */
     TOK_AND,
     TOK_OR,
     TOK_NOT,
@@ -48,6 +52,10 @@ typedef struct {
     int line;
     long int_val;
     double float_val;
+    /* TOK_INSERT_C: the block's lines, verbatim (NULL if int_val != 0).
+     * int_val: 0 = ok, 1 = no ':' + end of line after insert_C,
+     * 2 = no indented block below it. */
+    char *raw;
 } Token;
 
 typedef struct {

@@ -36,16 +36,31 @@ static Token peek_next(Parser *p) {
     return p->next;
 }
 
+/* What the current token is, for a message: its text, or a description
+ * for the tokens that have no visible text. Points into a static buffer. */
+static const char *describe_token(Parser *p) {
+    static char buf[96];
+    switch (p->cur.kind) {
+        case TOK_NEWLINE: return "end of line";
+        case TOK_INDENT:  return "more indentation";
+        case TOK_DEDENT:  return "less indentation";
+        case TOK_EOF:     return "end of file";
+        default:
+            snprintf(buf, sizeof(buf), "'%.*s'", p->cur.length > 80 ? 80 : p->cur.length, p->cur.start);
+            return buf;
+    }
+}
+
 static void fail(Parser *p, const char *msg) {
-    fprintf(stderr, "%s:%d: error de sintaxis: %s (token '%.*s')\n",
-            p->filename, p->cur.line, msg, p->cur.length, p->cur.start);
+    fprintf(stderr, "%s:%d: syntax error: %s (found %s)\n",
+            p->filename, p->cur.line, msg, describe_token(p));
     exit(1);
 }
 
 static void expect(Parser *p, TokenKind kind, const char *what) {
     if (p->cur.kind != kind) {
-        fprintf(stderr, "%s:%d: error de sintaxis: se esperaba %s pero se encontro '%.*s'\n",
-                p->filename, p->cur.line, what, p->cur.length, p->cur.start);
+        fprintf(stderr, "%s:%d: syntax error: expected %s but found %s\n",
+                p->filename, p->cur.line, what, describe_token(p));
         exit(1);
     }
     advance(p);
@@ -112,7 +127,7 @@ static Node *parse_primary(Parser *p) {
         expect(p, TOK_RPAREN, "')'");
         return n;
     }
-    fail(p, "expresion invalida");
+    fail(p, "invalid expression");
     return NULL;
 }
 
@@ -126,7 +141,7 @@ static Node *apply_method_calls(Parser *p, Node *n) {
         int line = p->cur.line;
         advance(p);
         char *method_name = tok_strdup(p->cur);
-        expect(p, TOK_IDENT, "nombre de metodo");
+        expect(p, TOK_IDENT, "a method name");
         expect(p, TOK_LPAREN, "'('");
         Node *call = node_new(NODE_METHOD_CALL, line);
         call->as.method_call.receiver = n;
@@ -263,7 +278,7 @@ static Node *parse_var_decl(Parser *p) {
         advance(p);
         n->as.var_decl.init = parse_expr(p);
     }
-    expect(p, TOK_NEWLINE, "fin de linea");
+    expect(p, TOK_NEWLINE, "end of line");
     return n;
 }
 
@@ -277,7 +292,7 @@ static Node *parse_assign_or_expr_stmt(Parser *p) {
         Node *n = node_new(NODE_ASSIGN, line);
         n->as.assign.name = name;
         n->as.assign.value = parse_expr(p);
-        expect(p, TOK_NEWLINE, "fin de linea");
+        expect(p, TOK_NEWLINE, "end of line");
         return n;
     }
     if (check(p, TOK_PLUS_ASSIGN) || check(p, TOK_MINUS_ASSIGN)) {
@@ -287,7 +302,7 @@ static Node *parse_assign_or_expr_stmt(Parser *p) {
         n->as.compound_assign.name = name;
         n->as.compound_assign.op = op;
         n->as.compound_assign.value = parse_expr(p);
-        expect(p, TOK_NEWLINE, "fin de linea");
+        expect(p, TOK_NEWLINE, "end of line");
         return n;
     }
     if (check(p, TOK_LPAREN)) {
@@ -301,7 +316,7 @@ static Node *parse_assign_or_expr_stmt(Parser *p) {
         expect(p, TOK_RPAREN, "')'");
         Node *stmt = node_new(NODE_EXPR_STMT, line);
         stmt->as.expr_stmt.expr = call;
-        expect(p, TOK_NEWLINE, "fin de linea");
+        expect(p, TOK_NEWLINE, "end of line");
         return stmt;
     }
     if (check(p, TOK_DOT)) {
@@ -310,10 +325,10 @@ static Node *parse_assign_or_expr_stmt(Parser *p) {
         Node *call = apply_method_calls(p, ident);
         Node *stmt = node_new(NODE_EXPR_STMT, line);
         stmt->as.expr_stmt.expr = call;
-        expect(p, TOK_NEWLINE, "fin de linea");
+        expect(p, TOK_NEWLINE, "end of line");
         return stmt;
     }
-    fail(p, "se esperaba una asignacion o llamada a funcion/metodo");
+    fail(p, "expected an assignment or a function/method call");
     return NULL;
 }
 
@@ -359,11 +374,10 @@ static Node *parse_while(Parser *p) {
     return n;
 }
 
-static Node *parse_for(Parser *p) {
-    int line = p->cur.line;
-    advance(p); /* 'for' */
+/* `<var> in range(...)`, shared by for and parallel for. */
+static void parse_range_header(Parser *p, char **var_out, Node **start_out, Node **end_out, Node **step_out) {
     char *var_name = tok_strdup(p->cur);
-    expect(p, TOK_IDENT, "identificador");
+    expect(p, TOK_IDENT, "an identifier");
     expect(p, TOK_IN, "'in'");
     expect(p, TOK_RANGE, "'range'");
     expect(p, TOK_LPAREN, "'('");
@@ -382,6 +396,18 @@ static Node *parse_for(Parser *p) {
         start = NULL; end = a1;
     }
     expect(p, TOK_RPAREN, "')'");
+    *var_out = var_name;
+    *start_out = start;
+    *end_out = end;
+    *step_out = step;
+}
+
+static Node *parse_for(Parser *p) {
+    int line = p->cur.line;
+    advance(p); /* 'for' */
+    char *var_name;
+    Node *start, *end, *step;
+    parse_range_header(p, &var_name, &start, &end, &step);
     expect(p, TOK_COLON, "':'");
 
     Node *n = node_new(NODE_FOR_RANGE, line);
@@ -393,6 +419,58 @@ static Node *parse_for(Parser *p) {
     return n;
 }
 
+/* parallel for <var> in range(...) [threads <expr>]: */
+static Node *parse_parallel_for(Parser *p) {
+    int line = p->cur.line;
+    advance(p); /* 'parallel' */
+    expect(p, TOK_FOR, "'for' after 'parallel'");
+    Node *n = node_new(NODE_PARALLEL_FOR, line);
+    parse_range_header(p, &n->as.parallel_for.var_name, &n->as.parallel_for.start,
+                       &n->as.parallel_for.end, &n->as.parallel_for.step);
+    if (check(p, TOK_IDENT) && p->cur.length == 7 && strncmp(p->cur.start, "threads", 7) == 0) {
+        advance(p);
+        n->as.parallel_for.threads = parse_expr(p);
+    }
+    expect(p, TOK_COLON, "':'");
+    parse_block(p, &n->as.parallel_for.body);
+    return n;
+}
+
+/* local <tipo> <nombre> [= expr]  /  global[(op)] <tipo> <nombre> [= expr]
+ * Where they may appear (top of a parallel for's body) is checked by
+ * codegen. */
+static Node *parse_pscope_decl(Parser *p) {
+    int pscope = check(p, TOK_LOCAL) ? PSCOPE_LOCAL : PSCOPE_GLOBAL;
+    advance(p);
+    char *reduce = NULL;
+    if (pscope == PSCOPE_GLOBAL && check(p, TOK_LPAREN)) {
+        advance(p);
+        if (check(p, TOK_PLUS)) reduce = "+";
+        else if (check(p, TOK_STAR)) reduce = "*";
+        else if (check(p, TOK_IDENT) && p->cur.length == 3 && strncmp(p->cur.start, "min", 3) == 0) reduce = "min";
+        else if (check(p, TOK_IDENT) && p->cur.length == 3 && strncmp(p->cur.start, "max", 3) == 0) reduce = "max";
+        else fail(p, "unsupported reduction operator (allowed: +, *, min, max)");
+        advance(p);
+        expect(p, TOK_RPAREN, "')'");
+    }
+    if (!looks_like_type_then_name(p)) fail(p, "expected '<type> <name>'");
+    Node *n = parse_var_decl(p);
+    n->as.var_decl.pscope = pscope;
+    n->as.var_decl.reduce = reduce;
+    return n;
+}
+
+/* insert_C: + indented block of C (captured whole by the lexer). Valid
+ * anywhere a statement or a top-level item is. */
+static Node *parse_insert_c(Parser *p) {
+    if (p->cur.int_val == 1) fail(p, "expected 'insert_C:' followed by the end of the line");
+    if (p->cur.int_val == 2) fail(p, "'insert_C:' needs an indented block of C code below it");
+    Node *n = node_new(NODE_INSERT_C, p->cur.line);
+    n->as.insert_c.code = p->cur.raw;
+    advance(p);
+    return n;
+}
+
 static Node *parse_return(Parser *p) {
     int line = p->cur.line;
     advance(p); /* 'return' */
@@ -400,7 +478,7 @@ static Node *parse_return(Parser *p) {
     if (!check(p, TOK_NEWLINE)) {
         n->as.return_stmt.value = parse_expr(p);
     }
-    expect(p, TOK_NEWLINE, "fin de linea");
+    expect(p, TOK_NEWLINE, "end of line");
     return n;
 }
 
@@ -408,30 +486,33 @@ static Node *parse_stmt(Parser *p) {
     if (check(p, TOK_IF)) return parse_if(p);
     if (check(p, TOK_WHILE)) return parse_while(p);
     if (check(p, TOK_FOR)) return parse_for(p);
+    if (check(p, TOK_PARALLEL)) return parse_parallel_for(p);
+    if (check(p, TOK_LOCAL) || check(p, TOK_GLOBAL)) return parse_pscope_decl(p);
     if (check(p, TOK_RETURN)) return parse_return(p);
+    if (check(p, TOK_INSERT_C)) return parse_insert_c(p);
     if (looks_like_type_then_name(p)) return parse_var_decl(p);
     if (check(p, TOK_IDENT)) return parse_assign_or_expr_stmt(p);
-    fail(p, "instruccion no reconocida");
+    fail(p, "unrecognized statement");
     return NULL;
 }
 
 static void parse_block(Parser *p, NodeList *out) {
-    expect(p, TOK_NEWLINE, "fin de linea antes de un bloque indentado");
+    expect(p, TOK_NEWLINE, "end of line before an indented block");
     skip_newlines(p);
-    expect(p, TOK_INDENT, "bloque indentado");
+    expect(p, TOK_INDENT, "an indented block");
     skip_newlines(p);
     while (!check(p, TOK_DEDENT) && !check(p, TOK_EOF)) {
         node_list_push(out, parse_stmt(p));
         skip_newlines(p);
     }
-    expect(p, TOK_DEDENT, "fin de bloque indentado");
+    expect(p, TOK_DEDENT, "end of indented block");
 }
 
 static Node *parse_func_def(Parser *p) {
     int line = p->cur.line;
     advance(p); /* 'def' */
     char *name = tok_strdup(p->cur);
-    expect(p, TOK_IDENT, "nombre de funcion");
+    expect(p, TOK_IDENT, "a function name");
     expect(p, TOK_LPAREN, "'('");
 
     Node *n = node_new(NODE_FUNC_DEF, line);
@@ -442,9 +523,9 @@ static Node *parse_func_def(Parser *p) {
         for (;;) {
             int pline = p->cur.line;
             char *ptype = tok_strdup(p->cur);
-            expect(p, TOK_IDENT, "tipo de parametro");
+            expect(p, TOK_IDENT, "a parameter type");
             char *pname = tok_strdup(p->cur);
-            expect(p, TOK_IDENT, "nombre de parametro");
+            expect(p, TOK_IDENT, "a parameter name");
             Node *param = node_new(NODE_PARAM, pline);
             param->as.param.type_name = ptype;
             param->as.param.name = pname;
@@ -457,7 +538,7 @@ static Node *parse_func_def(Parser *p) {
     if (check(p, TOK_ARROW)) {
         advance(p);
         n->as.func_def.return_type = tok_strdup(p->cur);
-        expect(p, TOK_IDENT, "tipo de retorno");
+        expect(p, TOK_IDENT, "a return type");
     }
     expect(p, TOK_COLON, "':'");
     parse_block(p, &n->as.func_def.body);
@@ -469,8 +550,8 @@ static Node *parse_import(Parser *p) {
     advance(p); /* 'import' */
     Node *n = node_new(NODE_IMPORT, line);
     n->as.import_stmt.module_name = tok_strdup(p->cur);
-    expect(p, TOK_IDENT, "nombre de modulo");
-    expect(p, TOK_NEWLINE, "fin de linea");
+    expect(p, TOK_IDENT, "a module name");
+    expect(p, TOK_NEWLINE, "end of line");
     return n;
 }
 
@@ -486,8 +567,9 @@ Node *parse_program(const char *src, const char *filename) {
     while (!check(&p, TOK_EOF)) {
         if (check(&p, TOK_IMPORT)) node_list_push(&program->as.program.items, parse_import(&p));
         else if (check(&p, TOK_DEF)) node_list_push(&program->as.program.items, parse_func_def(&p));
+        else if (check(&p, TOK_INSERT_C)) node_list_push(&program->as.program.items, parse_insert_c(&p));
         else if (looks_like_type_then_name(&p)) node_list_push(&program->as.program.items, parse_var_decl(&p));
-        else fail(&p, "en el nivel superior solo se permiten 'import', 'def' y declaraciones de variables globales");
+        else fail(&p, "only 'import', 'def', 'insert_C' and global variable declarations are allowed at the top level");
         skip_newlines(&p);
     }
     return program;

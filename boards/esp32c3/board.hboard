@@ -1,0 +1,10 @@
+# Placa ESP32-C3 (ESP32-C3-DevKitM-1 y compatibles; ver hermes_board.h y
+# docs/raw/hermes_boards.en.md)
+name        = esp32c3
+description = ESP32-C3-DevKitM-1 (ESP32-C3, RV32IMC): GPIO0-21, sin GPIO11-17 (flash)
+arch        = riscv32
+platform    = esp32c3
+mcu         = rv32imc
+# reloj en el que la ROM deja la CPU (XTAL, 40 MHz); HERMES no lo cambia y
+# ningun driver de esta plataforma depende de F_CPU
+f_cpu       = 40000000

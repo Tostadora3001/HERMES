@@ -1,6 +1,9 @@
 build/
+build-cmake/
 *.o
 CLAUDE.md
 docs/
 tests/
 examples/
+README.md
+.gitignore

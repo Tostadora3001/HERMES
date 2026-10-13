@@ -10,13 +10,12 @@
  * identifier, so every pointer/opaque handle gets a one-word typedef below
  * (no `*` ever appears in a .hepy type name).
  *
- * Two tiers, per the project's design (see CLAUDE.md and
- * docs/raw/hermes_threads.en.md):
- *   - automatic: thread_start() + threads_run() -- sensible defaults, the
- *     scheduler manages everything from there.
- *   - concrete: thread_start_ex() with an explicit heap/stack split, plus
- *     direct access to thread_join()/thread_yield() and the semaphore
- *     primitives for hand-written synchronization over shared resources.
+ * There is NO scheduler here (see docs/raw/hermes_threads.en.md): creating
+ * a thread doesn't run it. The program decides who runs and when --
+ * t.run() on its own core, t.launch()/t.launch_on(n) on another one -- and
+ * waits for it with t.wait(). Every operation exists both as a method
+ * (`t.run()`, for `device t = thread_start(...)`) and as a plain function
+ * (`thread_run(t)`, for a `hermes_thread_handle_t` variable or parameter).
  *
  * Naming note: sem_wait/sem_signal/sem_destroy intentionally reuse names
  * that also exist in POSIX <semaphore.h>. This header never includes
@@ -26,18 +25,26 @@
 
 #include "hermes_thread.h"
 #include "hermes_sem.h"
+#include "hermes_device_thread.h"
 
 typedef hermes_thread_t *hermes_thread_handle_t;
 typedef hermes_sem_t *hermes_sem_handle_t;
 
-/* --- automatic tier ------------------------------------------------- */
+/* --- creating ------------------------------------------------------- */
 
+/* Default memory sizes (per target, see hermes_thread.h). */
 static inline hermes_thread_handle_t thread_start(hermes_thread_fn fn, long arg) {
     return hermes_thread_create(fn, arg);
 }
 
-static inline void threads_run(void) {
-    hermes_threads_run();
+/* Explicit heap/stack split. */
+static inline hermes_thread_handle_t thread_start_ex(hermes_thread_fn fn, long arg,
+                                                       long heap_size, long stack_size) {
+    hermes_thread_attr_t attr;
+    attr.heap_size = (size_t)heap_size;
+    attr.stack_size = (size_t)stack_size;
+    attr.name = NULL;
+    return hermes_thread_create_ex(fn, arg, &attr);
 }
 
 /* The thread's identity is assigned automatically by the runtime when it is
@@ -48,33 +55,43 @@ static inline void threads_run(void) {
  * that must not be confused with "same thread". Use thread_id()/
  * thread_self_id() whenever code needs to tell threads apart. */
 static inline long thread_id(hermes_thread_handle_t t) {
-    return (long)t->id;
+    return (long)hermes_thread_id(t);
 }
 
 static inline long thread_self_id(void) {
     return (long)hermes_thread_current()->id;
 }
 
-/* --- concrete / fine-grained tier ------------------------------------ */
+/* --- running and waiting -------------------------------------------- */
 
-static inline hermes_thread_handle_t thread_start_ex(hermes_thread_fn fn, long arg,
-                                                       long heap_size, long stack_size) {
-    hermes_thread_attr_t attr;
-    attr.heap_size = (size_t)heap_size;
-    attr.stack_size = (size_t)stack_size;
-    attr.name = NULL;
-    return hermes_thread_create_ex(fn, arg, &attr);
+static inline void thread_run(hermes_thread_handle_t t) { hermes_thread_run(t); }
+static inline void thread_launch(hermes_thread_handle_t t) { hermes_thread_launch(t); }
+static inline void thread_launch_on(hermes_thread_handle_t t, long core) {
+    hermes_thread_launch_on(t, (int)core);
 }
+static inline void thread_wait(hermes_thread_handle_t t) { hermes_thread_wait(t); }
+static inline void thread_join(hermes_thread_handle_t t) { hermes_thread_wait(t); } /* old name */
+static inline bool thread_done(hermes_thread_handle_t t) { return hermes_thread_done(t) != 0; }
 
-static inline void thread_join(hermes_thread_handle_t t) {
-    hermes_thread_join(t);
-}
-
+/* Give control back to whoever ran this thread (no-op on main). */
 static inline void thread_yield(void) {
     hermes_thread_yield();
 }
 
-/* --- semaphores (both tiers) ----------------------------------------- */
+/* --- stopping -------------------------------------------------------- */
+
+static inline void thread_pause(hermes_thread_handle_t t) { hermes_thread_pause(t); }
+static inline void thread_resume(hermes_thread_handle_t t) { hermes_thread_resume(t); }
+static inline void thread_abort(hermes_thread_handle_t t) { hermes_thread_abort(t); }
+static inline void thread_destroy(hermes_thread_handle_t t) { hermes_thread_destroy(t); }
+
+/* --- cores ----------------------------------------------------------- */
+
+static inline long cores_count(void) { return hermes_cores_count(); }
+static inline long cores_free(void) { return hermes_cores_free(); }
+static inline long core_id(void) { return hermes_core_current(); }
+
+/* --- semaphores ------------------------------------------------------ */
 
 static inline hermes_sem_handle_t sem_create(long initial_count) {
     return hermes_sem_create(initial_count);

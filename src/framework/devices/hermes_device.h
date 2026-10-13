@@ -129,9 +129,8 @@ void hermes_device_register_or_abort(hermes_device_t *d,
                                      const char *name);
 
 /* Removes `d` from its kind's list, keeping the rest in creation order.
- * Returns 1 if it was registered, 0 otherwise. Nothing calls it yet (no
- * device is destroyed today); it's the counterpart a future destroy
- * operation will use. */
+ * Returns 1 if it was registered, 0 otherwise. Used by thread destroy
+ * (hermes_thread_destroy); other kinds can't be destroyed yet. */
 int hermes_device_unregister(hermes_device_t *d);
 
 /* Calls the `abort` of every registered device, kind by kind (order of

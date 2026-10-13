@@ -2,10 +2,12 @@
 #include "parser.h"
 #include "codegen.h"
 #include "arch.h"
-#include "mempool.h"
+#include "board.h"
+#include "threadprofile.h"
 #include "module.h"
 #include "corelib.h"
 #include "repo.h"
+#include "diagnostics.h"
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -26,33 +28,38 @@ static char *read_file(const char *path) {
 
 static void print_usage(const char *prog) {
     fprintf(stderr,
-        "Uso: %s <entrada.hepy> [-o <salida.c>] [--compile <binario>] [--cc <compilador>]\n"
-        "            [-I <dir>]... [--src <fichero.c|.S>]... [--repo-dir <dir>] [--core-dir <dir>]\n"
-        "  -o <salida.c>        Ruta del .c generado (por defecto: <entrada>.c)\n"
-        "  --compile <binario>  Tras transpilar, compila el .c al binario indicado\n"
-        "  --cc <compilador>    Compilador a usar (por defecto: gcc). Se ignora si el\n"
-        "                       .hepy importa alguna arquitectura reconocida (ver abajo)\n"
-        "  -I <dir>              Directorio de includes adicional (repetible)\n"
-        "  --src <fichero>       Fichero .c/.S adicional a enlazar junto al generado\n"
-        "                        (repetible). Los del framework NO hacen falta: hepyc\n"
-        "                        enlaza solo lo que pide cada import (ver corelib.c)\n"
-        "  --repo-dir <dir>      Raiz del repo HERMES (src/ y modules/). Por defecto: la\n"
-        "                        carpeta padre de la del binario hepyc (build/ -> raiz)\n"
-        "  --core-dir <dir>      Donde buscar hermes_ctx_*.S (por defecto <repo>/src/framework/core)\n"
+        "Usage: %s <input.hepy> [-o <output.c>] [--compile <binary>] [--cc <compiler>]\n"
+        "            [-I <dir>]... [--src <file.c|.S>]... [--repo-dir <dir>] [--core-dir <dir>]\n"
+        "  -o <output.c>        Path of the generated .c (default: <input>.c)\n"
+        "  --compile <binary>   After transpiling, compile the .c into that binary\n"
+        "  --cc <compiler>      Compiler to use (default: gcc). Ignored if the .hepy\n"
+        "                       imports a known architecture (see below)\n"
+        "  -I <dir>             Extra include directory (repeatable)\n"
+        "  --src <file>         Extra .c/.S file to link with the generated one\n"
+        "                       (repeatable). Framework files are NOT needed: hepyc\n"
+        "                       links whatever each import needs (see corelib.c)\n"
+        "  --repo-dir <dir>     Root of the HERMES repo (src/ and modules/). Default: the\n"
+        "                       parent of the folder holding hepyc (build/ -> root)\n"
+        "  --core-dir <dir>     Where to find hermes_ctx_*.S (default <repo>/src/framework/core)\n"
+        "  --raw-diagnostics    Show the C compiler's messages as they are (by default\n"
+        "                       hepyc rewrites the ones it knows in HERMESPY terms)\n"
         "\n"
-        "Arquitecturas reconocidas por import (ver docs/raw/Subconjunto-HERMESPY.v0.1.es.md):\n"
-        "  Sin ningun import de arquitectura  -> un unico binario nativo (--compile tal cual)\n"
-        "  Un import de arquitectura          -> un unico binario para esa arquitectura\n"
-        "  Varios imports de arquitectura      -> un binario por cada una, con el nombre de\n"
-        "                                        --compile sufijado por arquitectura\n"
+        "Targets, by import (see docs/raw/hermes_boards.en.md):\n"
+        "  'native' = the host; a board ('uno', 'mega'... = boards/<name>/) = that\n"
+        "  board; 'avr' = the Uno.\n"
+        "  No target import                -> one native binary (--compile as given)\n"
+        "  One target import               -> one binary for that target\n"
+        "  Several target imports          -> one binary per target, --compile\n"
+        "                                     suffixed with the import name\n"
         "\n"
-        "Perfiles de memoria reconocidos por import ('light'/'medium'/'heavy'): fijan\n"
-        "-DHERMES_POOL_BYTES=<N> en la compilacion (ver src/engine/compiler/mempool.c).\n"
-        "Como maximo uno de los tres puede importarse. Ortogonal a la arquitectura.\n"
+        "Thread-size profiles, by import ('light'/'medium'/'heavy'): the default size\n"
+        "of each thread's block (heap + stack; AVR: 32+256 / 64+512 / 128+1024 B,\n"
+        "host: 256+2K / 512+8K / 1K+16K; without one, medium). See hermes_thread.h.\n"
+        "At most one. Independent of the architecture.\n"
         "\n"
-        "Modulos: 'import <nombre>' carga modules/<nombre>/module.hmod si existe (devices,\n"
-        "fuentes, drivers y arquitecturas soportadas; ver docs/raw/hermes_modules.en.md).\n"
-        "Si no existe, el import es un '#include \"<nombre>.h\"' normal.\n",
+        "Modules: 'import <name>' loads modules/<name>/module.hmod if it exists (devices,\n"
+        "sources, drivers and supported architectures; see docs/raw/hermes_modules.en.md).\n"
+        "Otherwise the import is a plain '#include \"<name>.h\"'.\n",
         prog);
 }
 
@@ -75,7 +82,7 @@ static void sources_add(SourceList *l, const char *path) {
         if (strcmp(l->canon[i], canon) == 0) return;
     }
     if (l->count >= MAX_BUILD_SOURCES) {
-        fprintf(stderr, "hepyc: demasiados ficheros fuente (maximo %d)\n", MAX_BUILD_SOURCES);
+        fprintf(stderr, "hepyc: too many source files (at most %d)\n", MAX_BUILD_SOURCES);
         exit(1);
     }
     l->paths[l->count] = path;
@@ -89,21 +96,35 @@ static void sources_add(SourceList *l, const char *path) {
  * apply to `arch` (common ones + `sources.<arch>`). */
 static void collect_sources(SourceList *l, char **extra_sources, int num_extra_sources,
                             const char *repo_dir, const char *ctx_dir,
-                            const HermesArchProfile *arch) {
+                            const HermesArchProfile *arch, const HermesPlatform *platform) {
     l->count = 0;
     for (int i = 0; i < num_extra_sources; i++) sources_add(l, extra_sources[i]);
 
     for (int i = 0; i < hermes_corelib_selected_count(); i++) {
         const HermesCoreLib *lib = hermes_corelib_selected_at(i);
         for (int j = 0; lib->sources[j]; j++) {
+            /* `{platform}`: the target's implementation (e.g. of a driver) */
+            char *src = hermes_corelib_source_for_platform(lib->sources[j], platform->name);
             char sub[512];
-            snprintf(sub, sizeof(sub), "src/%s", lib->sources[j]);
-            sources_add(l, hermes_repo_path(repo_dir, sub));
+            snprintf(sub, sizeof(sub), "src/%s", src);
+            char *full = hermes_repo_path(repo_dir, sub);
+            FILE *probe = fopen(full, "r");
+            if (!probe) {
+                fprintf(stderr, "hepyc: '%s' has no implementation for platform '%s' (missing %s)\n",
+                        lib->name, platform->name, full);
+                exit(1);
+            }
+            fclose(probe);
+            sources_add(l, full);
+            free(src);
         }
     }
     if (hermes_corelib_needs_ctx() && arch->ctx_src) {
         sources_add(l, hermes_repo_path(ctx_dir, arch->ctx_src));
     }
+
+    /* what every program for this chip links (startup...: platform.hplat) */
+    for (int i = 0; i < platform->num_sources; i++) sources_add(l, platform->sources[i]);
 
     for (int k = 0; k < hermes_module_count(); k++) {
         const HermesModule *m = hermes_module_at(k);
@@ -114,6 +135,33 @@ static void collect_sources(SourceList *l, char **extra_sources, int num_extra_s
         }
     }
 }
+
+/* --- build targets --------------------------------------------------------
+ * One per binary: an architecture and the board it's built for (for
+ * native, the board whose pin map the host mock uses). */
+#define MAX_TARGETS 16
+
+typedef struct {
+    const char *import_name;          /* names the binary when there are several */
+    const HermesArchProfile *arch;
+    const HermesBoard *board;
+    const HermesPlatform *platform;   /* the board's; native for the host */
+} Target;
+
+static const char *g_drivers_dir;     /* <repo>/src/framework/drivers */
+
+static const HermesBoard *load_default_board(const char *boards_dir, const HermesArchProfile *arch) {
+    const HermesBoard *b = hermes_board_load(boards_dir, g_drivers_dir, arch->default_board);
+    if (!b) {
+        fprintf(stderr, "hepyc: default board '%s' of architecture '%s' not found in %s\n",
+                arch->default_board, arch->import_name, boards_dir);
+        exit(1);
+    }
+    return b;
+}
+
+/* --raw-diagnostics: show the C compiler's messages as they are */
+static int g_raw_diagnostics = 0;
 
 static void run_build(const char *cc, const char *extra_cflags,
                        const char **include_dirs, int num_includes,
@@ -133,13 +181,13 @@ static void run_build(const char *cc, const char *extra_cflags,
         offset += snprintf(cmd + offset, sizeof(cmd) - offset, " %s", sources->paths[i]);
     }
     snprintf(cmd + offset, sizeof(cmd) - offset, " -o %s", bin_path);
-    printf("hepyc: ejecutando: %s\n", cmd);
-    int ret = system(cmd);
+    printf("hepyc: running: %s\n", cmd);
+    int ret = hermes_run_compiler(cmd, g_raw_diagnostics);
     if (ret != 0) {
-        fprintf(stderr, "hepyc: fallo la compilacion del C generado (destino %s)\n", bin_path);
+        fprintf(stderr, "hepyc: compiling the generated C failed (target %s)\n", bin_path);
         exit(1);
     }
-    printf("hepyc: binario generado %s\n", bin_path);
+    printf("hepyc: built %s\n", bin_path);
 }
 
 int main(int argc, char **argv) {
@@ -169,10 +217,12 @@ int main(int argc, char **argv) {
             if (num_extra_sources < 32) extra_sources[num_extra_sources++] = argv[++i];
         } else if (strcmp(argv[i], "--core-dir") == 0 && i + 1 < argc) {
             core_dir = argv[++i];
+        } else if (strcmp(argv[i], "--raw-diagnostics") == 0) {
+            g_raw_diagnostics = 1;
         } else if (strcmp(argv[i], "--repo-dir") == 0 && i + 1 < argc) {
             repo_override = argv[++i];
         } else {
-            fprintf(stderr, "Argumento no reconocido: %s\n", argv[i]);
+            fprintf(stderr, "Unknown argument: %s\n", argv[i]);
             print_usage(argv[0]);
             return 1;
         }
@@ -186,6 +236,8 @@ int main(int argc, char **argv) {
 
     const char *repo_dir = hermes_repo_dir(argv[0], repo_override);
     const char *modules_dir = hermes_repo_path(repo_dir, "modules");
+    const char *boards_dir = hermes_repo_path(repo_dir, "boards");
+    g_drivers_dir = hermes_repo_path(repo_dir, "src/framework/drivers");
     if (!core_dir) core_dir = hermes_repo_path(repo_dir, "src/framework/core");
 
     char *src = read_file(input_path);
@@ -199,28 +251,64 @@ int main(int argc, char **argv) {
         Node *item = program->as.program.items.items[i];
         if (item->kind != NODE_IMPORT) continue;
         const char *mod = item->as.import_stmt.module_name;
-        if (hermes_arch_lookup(mod) || hermes_mempool_lookup(mod)) continue;
+        if (hermes_arch_lookup(mod) || hermes_threadprofile_lookup(mod)) continue;
+        if (hermes_board_load(boards_dir, g_drivers_dir, mod)) continue;
         if (hermes_corelib_select(mod)) continue;
         const HermesModule *m = hermes_module_load(modules_dir, mod);
-        if (m) printf("hepyc: modulo '%s' (%s)\n", m->name, m->dir);
+        if (m) printf("hepyc: module '%s' (%s)\n", m->name, m->dir);
     }
 
-    /* Collect the distinct recognized architecture imports, in the order
-     * they first appear, to decide how many targets to build. */
-    const HermesArchProfile *targets[HERMES_ARCH_PROFILE_COUNT];
+    {
+        const char *names[256];
+        int n = 0;
+        for (int i = 0; i < program->as.program.items.count && n < 256; i++) {
+            Node *item = program->as.program.items.items[i];
+            if (item->kind == NODE_IMPORT) names[n++] = item->as.import_stmt.module_name;
+        }
+        if (!hermes_corelib_check_rules(names, n)) return 1;
+    }
+
+    /* Collect the build targets, in the order their imports first appear:
+     * `native` (the host), a board (`import uno`), or another architecture
+     * (`import avr` = its default board). Two imports naming the same
+     * build (e.g. `avr` and `uno`) give one target. */
+    Target targets[MAX_TARGETS];
     int num_targets = 0;
     for (int i = 0; i < program->as.program.items.count; i++) {
         Node *item = program->as.program.items.items[i];
         if (item->kind != NODE_IMPORT) continue;
-        const HermesArchProfile *prof = hermes_arch_lookup(item->as.import_stmt.module_name);
-        if (!prof) continue;
+        const char *mod = item->as.import_stmt.module_name;
+        Target t = { mod, NULL, NULL, NULL };
+        const HermesArchProfile *prof = hermes_arch_lookup(mod);
+        if (prof) {
+            t.arch = prof;
+            if (prof->mcu_flag) t.board = load_default_board(boards_dir, prof);
+        } else if ((t.board = hermes_board_find(mod)) != NULL) {
+            t.arch = t.board->arch;
+        } else {
+            continue;
+        }
         int already = 0;
-        for (int j = 0; j < num_targets; j++) if (targets[j] == prof) already = 1;
-        if (!already) targets[num_targets++] = prof;
+        for (int j = 0; j < num_targets; j++) {
+            if (targets[j].arch == t.arch && targets[j].board == t.board) already = 1;
+        }
+        if (!already && num_targets < MAX_TARGETS) targets[num_targets++] = t;
+    }
+
+    /* The host build's pin map (its GPIO mock): the first board imported,
+     * else the native profile's default board. */
+    const HermesArchProfile *native = hermes_arch_lookup("native");
+    const HermesBoard *native_board = NULL;
+    for (int j = 0; j < num_targets && !native_board; j++) native_board = targets[j].board;
+    if (!native_board) native_board = load_default_board(boards_dir, native);
+    const HermesPlatform *native_platform = hermes_platform_load(g_drivers_dir, "native", native);
+    for (int j = 0; j < num_targets; j++) {
+        if (!targets[j].board) targets[j].board = native_board;
+        targets[j].platform = targets[j].arch->mcu_flag ? targets[j].board->platform : native_platform;
     }
 
     /* Every imported module (and what it requires) must support every
-     * target. Without an architecture import the build is native. */
+     * target's architecture. Without a target import the build is native. */
     for (int k = 0; k < hermes_module_count(); k++) {
         const HermesModule *m = hermes_module_at(k);
         int ok = 1;
@@ -229,53 +317,58 @@ int main(int argc, char **argv) {
             ok = hermes_module_supports_arch(m, "native");
         } else {
             for (int t = 0; t < num_targets && ok; t++) {
-                if (!hermes_module_supports_arch(m, targets[t]->import_name)) {
+                if (!hermes_module_supports_arch(m, targets[t].arch->import_name)) {
                     ok = 0;
-                    bad_arch = targets[t]->import_name;
+                    bad_arch = targets[t].arch->import_name;
                 }
             }
         }
         if (!ok) {
-            fprintf(stderr, "hepyc: el modulo '%s' no soporta la arquitectura '%s' (ver %s/module.hmod, clave 'archs')\n",
+            fprintf(stderr, "hepyc: module '%s' doesn't support architecture '%s' (see %s/module.hmod, key 'archs')\n",
                     m->name, bad_arch, m->dir);
             return 1;
         }
     }
 
-    char *c_code = codegen_generate(program);
+    char *c_code = codegen_generate(program, input_path);
 
     FILE *out = fopen(output_c_path, "w");
     if (!out) { perror(output_c_path); return 1; }
     fputs(c_code, out);
     fclose(out);
-    printf("hepyc: generado %s\n", output_c_path);
+    printf("hepyc: generated %s\n", output_c_path);
 
     if (!compile_bin_path) {
         return 0;
     }
 
-    /* Memory-profile import ('light'/'medium'/'heavy'): orthogonal to
+    /* Thread-size profile import ('light'/'medium'/'heavy'): orthogonal to
      * architecture, so resolved once and applied to every target below
-     * (including the no-architecture path). At most one allowed --
-     * unlike architecture imports, this isn't a "build N variants"
-     * selector, it's a single global numeric knob. */
-    const HermesMemPoolProfile *mempool_prof = NULL;
+     * (including the no-architecture path). At most one allowed. */
+    const HermesThreadProfile *thread_prof = NULL;
     for (int i = 0; i < program->as.program.items.count; i++) {
         Node *item = program->as.program.items.items[i];
         if (item->kind != NODE_IMPORT) continue;
-        const HermesMemPoolProfile *mp = hermes_mempool_lookup(item->as.import_stmt.module_name);
+        const HermesThreadProfile *mp = hermes_threadprofile_lookup(item->as.import_stmt.module_name);
         if (!mp) continue;
-        if (mempool_prof && mempool_prof != mp) {
+        if (thread_prof && thread_prof != mp) {
             fprintf(stderr,
-                "hepyc: como maximo se puede importar un perfil de memoria ('%s' y '%s' son incompatibles)\n",
-                mempool_prof->import_name, mp->import_name);
+                "hepyc: at most one thread-size profile can be imported ('%s' and '%s' are incompatible)\n",
+                thread_prof->import_name, mp->import_name);
             return 1;
         }
-        mempool_prof = mp;
+        thread_prof = mp;
     }
-    char mempool_cflag[128] = "";
-    if (mempool_prof) {
-        snprintf(mempool_cflag, sizeof(mempool_cflag), "-DHERMES_POOL_BYTES=%ld", mempool_prof->pool_bytes);
+    char profile_cflag[160] = "";
+    if (thread_prof) {
+        snprintf(profile_cflag, sizeof(profile_cflag), "-DHERMES_THREAD_PROFILE=%d", thread_prof->level);
+    }
+    /* with the UART driver linked, the framework's error messages go out
+     * through it on AVR (src/framework/core/hermes_diag.h) */
+    if (hermes_corelib_is_selected("driver:uart")) {
+        size_t used = strlen(profile_cflag);
+        snprintf(profile_cflag + used, sizeof(profile_cflag) - used, "%s-DHERMES_DIAG_UART",
+                 used ? " " : "");
     }
 
     /* Include dirs for every build: the caller's, then the framework's own
@@ -295,18 +388,24 @@ int main(int argc, char **argv) {
     SourceList sources;
 
     if (num_targets == 0) {
-        /* No architecture import: a single build with --cc (gcc by
-         * default), exact --compile name. Treated as 'native' for what to
-         * link -- the context-switch backend included, if needed. */
-        collect_sources(&sources, extra_sources, num_extra_sources, repo_dir, core_dir,
-                        hermes_arch_lookup("native"));
-        run_build(cc_override, mempool_cflag, all_includes, num_all_includes, output_c_path,
+        /* No target import: a single build with --cc (gcc by default),
+         * exact --compile name. Treated as 'native' for what to link -- the
+         * context-switch backend and driver implementations included. */
+        collect_sources(&sources, extra_sources, num_extra_sources, repo_dir, core_dir, native,
+                        native_platform);
+        all_includes[num_all_includes] = native_board->dir;
+        /* the runtime's cores are pthreads on the host */
+        char legacy_cflags[192];
+        snprintf(legacy_cflags, sizeof(legacy_cflags), "%s%s",
+                 hermes_corelib_needs_ctx() ? "-pthread " : "", profile_cflag);
+        run_build(cc_override, legacy_cflags, all_includes, num_all_includes + 1, output_c_path,
                   &sources, compile_bin_path);
         return 0;
     }
 
     for (int t = 0; t < num_targets; t++) {
-        const HermesArchProfile *prof = targets[t];
+        const HermesArchProfile *prof = targets[t].arch;
+        const HermesBoard *board = targets[t].board;
 
         char bin_path_buf[1024];
         const char *bin_path;
@@ -314,16 +413,33 @@ int main(int argc, char **argv) {
             bin_path = compile_bin_path; /* single explicit target: exact name, no suffix */
         } else {
             snprintf(bin_path_buf, sizeof(bin_path_buf), "%s_%s%s",
-                     compile_bin_path, prof->import_name, prof->bin_suffix);
+                     compile_bin_path, targets[t].import_name, prof->bin_suffix);
             bin_path = bin_path_buf;
         }
 
-        char combined_cflags[256];
-        snprintf(combined_cflags, sizeof(combined_cflags), "%s %s", prof->extra_cflags, mempool_cflag);
+        /* architecture flags, then the board's chip and clock */
+        char combined_cflags[1024];
+        int n = snprintf(combined_cflags, sizeof(combined_cflags), "%s", prof->extra_cflags);
+        if (prof->mcu_flag) {
+            n += snprintf(combined_cflags + n, sizeof(combined_cflags) - n, " ");
+            n += snprintf(combined_cflags + n, sizeof(combined_cflags) - n, prof->mcu_flag, board->mcu);
+            n += snprintf(combined_cflags + n, sizeof(combined_cflags) - n, " -DF_CPU=%sUL", board->f_cpu);
+        }
+        if (targets[t].platform->cflags[0]) {
+            n += snprintf(combined_cflags + n, sizeof(combined_cflags) - n, " %s", targets[t].platform->cflags);
+        }
+        snprintf(combined_cflags + n, sizeof(combined_cflags) - n, " %s", profile_cflag);
 
-        printf("hepyc: arquitectura '%s' -> %s\n", prof->import_name, bin_path);
-        collect_sources(&sources, extra_sources, num_extra_sources, repo_dir, core_dir, prof);
-        run_build(prof->cc, combined_cflags, all_includes, num_all_includes, output_c_path,
+        if (prof->mcu_flag) {
+            printf("hepyc: target '%s' (board %s, %s, platform %s) -> %s\n", targets[t].import_name,
+                   board->name, board->mcu, targets[t].platform->name, bin_path);
+        } else {
+            printf("hepyc: target '%s' (pins of board %s) -> %s\n", targets[t].import_name, board->name, bin_path);
+        }
+        collect_sources(&sources, extra_sources, num_extra_sources, repo_dir, core_dir, prof,
+                        targets[t].platform);
+        all_includes[num_all_includes] = board->dir; /* its hermes_board.h */
+        run_build(prof->cc, combined_cflags, all_includes, num_all_includes + 1, output_c_path,
                   &sources, bin_path);
     }
 

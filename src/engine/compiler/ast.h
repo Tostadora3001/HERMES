@@ -12,8 +12,10 @@ typedef enum {
     NODE_IF,
     NODE_WHILE,
     NODE_FOR_RANGE,
+    NODE_PARALLEL_FOR,
     NODE_RETURN,
     NODE_EXPR_STMT,
+    NODE_INSERT_C,
 
     NODE_BINOP,
     NODE_UNOP,
@@ -27,6 +29,9 @@ typedef enum {
 } NodeKind;
 
 typedef struct Node Node;
+
+#define PSCOPE_LOCAL 1
+#define PSCOPE_GLOBAL 2
 
 typedef struct {
     Node **items;
@@ -65,7 +70,11 @@ struct Node {
 
         struct { char *type_name; char *name; } param;
 
-        struct { char *type_name; char *name; Node *init; } var_decl;
+        /* `pscope`: 0 = normal declaration; PSCOPE_LOCAL / PSCOPE_GLOBAL =
+         * `local` / `global` at the top of a parallel for's body.
+         * `reduce`: for `global(op)`, the operator ("+", "*", "min",
+         * "max"); NULL otherwise. */
+        struct { char *type_name; char *name; Node *init; int pscope; char *reduce; } var_decl;
 
         struct { char *name; Node *value; } assign;
 
@@ -81,9 +90,23 @@ struct Node {
             NodeList body;
         } for_range;
 
+        /* parallel for <var> in range(...) [threads <expr>]: -- same range
+         * as for_range plus the thread count (NULL = automatic). */
+        struct {
+            char *var_name;
+            Node *start, *end, *step; /* start NULL => 0, step NULL => 1 */
+            Node *threads;
+            NodeList body;
+        } parallel_for;
+
         struct { Node *value; } return_stmt; /* value may be NULL */
 
         struct { Node *expr; } expr_stmt;
+
+        /* insert_C: plain C copied verbatim into the generated .c, at the
+         * place of the directive. `line` is the line of `insert_C`; the
+         * code starts on the next one. */
+        struct { char *code; } insert_c;
 
         struct { char op[3]; Node *left; Node *right; } binop;
         struct { char op[3]; Node *operand; } unop;

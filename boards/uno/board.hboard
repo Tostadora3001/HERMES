@@ -1,0 +1,6 @@
+# Placa Arduino Uno (ver hermes_board.h y docs/raw/hermes_boards.en.md)
+name        = uno
+description = Arduino Uno (ATmega328P, 16 MHz): D0-D13, A0-A5 = 14-19
+arch        = avr
+mcu         = atmega328p
+f_cpu       = 16000000

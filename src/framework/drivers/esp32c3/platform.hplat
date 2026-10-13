@@ -1,0 +1,7 @@
+# Plataforma ESP32-C3 (ver docs/raw/hermes_boards.en.md, "Platforms")
+# Lo que todo programa para este chip enlaza, use o no drivers: el arranque
+# (sin ESP-IDF ni bootloader de segunda etapa) y el script de enlazado.
+name    = esp32c3
+arch    = riscv32
+sources = hermes_start_esp32c3.S hermes_platform_esp32c3.c
+cflags  = -nostartfiles -T {dir}/esp32c3.ld

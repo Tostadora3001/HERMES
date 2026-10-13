@@ -5,7 +5,8 @@
  * hermes_drv_timer.c automatically). Plain functions, not a device: there
  * is no receiver -- "now" and "wait" don't belong to any instance.
  *
- *   delay_ms(ms)  wait, letting other hermes_threads run meanwhile
+ *   delay_ms(ms)  wait; inside a thread, gives control back to whoever runs
+ *                 it on every check (thread_yield)
  *   delay_us(us)  short precise busy wait (never yields)
  *   millis()      ms since the timer started (first use)
  *   micros()      us since the timer started

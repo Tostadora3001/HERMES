@@ -2,10 +2,16 @@
 #include <string.h>
 
 const HermesArchProfile HERMES_ARCH_PROFILES[] = {
-    { "native", "gcc",     "-pthread",              "hermes_ctx_x86_64.S", ""     },
-    /* F_CPU: the Uno's 16 MHz crystal -- the timer and UART drivers
-     * derive their register values from it (src/framework/drivers). */
-    { "avr",    "avr-gcc", "-mmcu=atmega328p -DF_CPU=16000000UL -Os", "hermes_ctx_avr.S", ".elf" },
+    { "native", "gcc",     "-pthread", NULL,        "hermes_ctx_x86_64.S", "",     "uno" },
+    /* the chip (-mmcu) and F_CPU come from the board (boards/<board>/board.hboard) */
+    { "avr",    "avr-gcc", "-Os",      "-mmcu=%s",  "hermes_ctx_avr.S",    ".elf", "uno" },
+    /* RISC-V 32-bit microcontrollers, bare metal: picolibc as the C
+     * library (approved by the user); the board's mcu is the ISA string
+     * (e.g. rv32imc). What is chip-specific (startup, linker script) comes
+     * from the board's platform (platform.hplat). */
+    { "riscv32", "riscv64-unknown-elf-gcc",
+      "--specs=picolibc.specs -Os -ffunction-sections -fdata-sections -Wl,--gc-sections",
+      "-march=%s_zicsr -mabi=ilp32", "hermes_ctx_riscv32.S", ".elf", "esp32c3" },
 };
 const int HERMES_ARCH_PROFILE_COUNT = sizeof(HERMES_ARCH_PROFILES) / sizeof(HERMES_ARCH_PROFILES[0]);
 

@@ -9,6 +9,8 @@ static const Keyword KEYWORDS[] = {
     {"def", TOK_DEF}, {"if", TOK_IF}, {"elif", TOK_ELIF}, {"else", TOK_ELSE},
     {"while", TOK_WHILE}, {"for", TOK_FOR}, {"in", TOK_IN}, {"range", TOK_RANGE},
     {"return", TOK_RETURN}, {"import", TOK_IMPORT},
+    {"parallel", TOK_PARALLEL}, {"local", TOK_LOCAL}, {"global", TOK_GLOBAL},
+    {"insert_C", TOK_INSERT_C},
     {"and", TOK_AND}, {"or", TOK_OR}, {"not", TOK_NOT},
     {"True", TOK_TRUE}, {"False", TOK_FALSE},
 };
@@ -37,6 +39,7 @@ static Token make_tok(Lexer *lx, TokenKind kind, const char *start, int length) 
     t.line = lx->line;
     t.int_val = 0;
     t.float_val = 0;
+    t.raw = NULL;
     return t;
 }
 
@@ -107,6 +110,56 @@ static TokenKind ident_keyword_kind(const char *start, int length) {
     return TOK_IDENT;
 }
 
+/* `insert_C:` + an indented block: the block is plain C, copied verbatim
+ * into the generated .c, so it is captured here as raw text instead of
+ * being tokenized (C's `#include` would be a comment, `{` an unknown
+ * token...). The block is every following line that is blank or indented
+ * more than the block holding `insert_C` -- the same rule as any HERMESPY
+ * block, except that the lines inside keep their own indentation (a C
+ * line indented less than the first one is fine). Trailing blank lines
+ * are left out of the block. Leaves the lexer at the start of the line
+ * after the block. */
+static Token lex_insert_c(Lexer *lx, const char *start, int len) {
+    Token t = make_tok(lx, TOK_INSERT_C, start, len);
+    if (lx->paren_depth > 0) { t.int_val = 1; return t; }
+
+    while (peekc(lx) == ' ' || peekc(lx) == '\t') lx->pos++;
+    if (peekc(lx) != ':') { t.int_val = 1; return t; }
+    lx->pos++;
+    while (peekc(lx) == ' ' || peekc(lx) == '\t') lx->pos++;
+    if (peekc(lx) == '#') { while (peekc(lx) != '\n' && peekc(lx) != '\0') lx->pos++; }
+    if (peekc(lx) != '\n' && peekc(lx) != '\0') { t.int_val = 1; return t; }
+    if (peekc(lx) == '\n') { lx->pos++; lx->line++; }
+
+    int outer = lx->indent_stack[lx->indent_top];
+    int body_start = lx->pos;
+    int body_end = lx->pos;      /* just after the last line with code */
+    int end_line = lx->line;     /* the line number at body_end */
+    int pos = lx->pos, line = lx->line;
+    for (;;) {
+        int width = 0, p = pos;
+        while (lx->src[p] == ' ' || lx->src[p] == '\t') { width += lx->src[p] == '\t' ? 8 : 1; p++; }
+        char c = lx->src[p];
+        if (c == '\0') break;
+        if (c == '\n') { pos = p + 1; line++; continue; }   /* blank line */
+        if (width <= outer) break;                          /* back to the outer block */
+        while (lx->src[p] != '\n' && lx->src[p] != '\0') p++;
+        if (lx->src[p] == '\n') { p++; line++; }
+        pos = body_end = p;
+        end_line = line;
+    }
+    if (body_end == body_start) { t.int_val = 2; return t; }
+
+    int n = body_end - body_start;
+    t.raw = malloc(n + 1);
+    memcpy(t.raw, lx->src + body_start, n);
+    t.raw[n] = '\0';
+    lx->pos = body_end;
+    lx->line = end_line;
+    lx->at_line_start = 1;
+    return t;
+}
+
 Token lexer_next(Lexer *lx) {
     if (lx->pending_dedents > 0) {
         lx->pending_dedents--;
@@ -162,6 +215,7 @@ Token lexer_next(Lexer *lx) {
         int len = 0;
         while (isalnum((unsigned char)peekc(lx)) || peekc(lx) == '_') { lx->pos++; len++; }
         TokenKind kind = ident_keyword_kind(start, len);
+        if (kind == TOK_INSERT_C) return lex_insert_c(lx, start, len);
         return make_tok(lx, kind, start, len);
     }
 
@@ -246,6 +300,10 @@ const char *token_kind_name(TokenKind kind) {
         case TOK_RANGE: return "range";
         case TOK_RETURN: return "return";
         case TOK_IMPORT: return "import";
+        case TOK_PARALLEL: return "parallel";
+        case TOK_LOCAL: return "local";
+        case TOK_GLOBAL: return "global";
+        case TOK_INSERT_C: return "insert_C";
         case TOK_AND: return "and";
         case TOK_OR: return "or";
         case TOK_NOT: return "not";

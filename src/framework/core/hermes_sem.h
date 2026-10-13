@@ -3,17 +3,16 @@
 
 #include <stdbool.h>
 
-/* Counting semaphore for guarding shared resources between threads.
- * Cooperative: there is only ever one thread actually running at a time
- * (see hermes_thread.h), so wait()/signal() need no atomics or interrupt
- * masking -- correctness comes from never yielding/switching in the middle
- * of an update to `count` or the wait queue. */
+/* Counting semaphore for guarding shared resources between threads,
+ * including threads running at the same time on different cores (every
+ * operation takes the framework lock, see hermes_sched_internal.h).
+ * A wait() with no token gives control back to whoever ran the thread
+ * (main waits right there) until a signal() hands it one. */
 typedef struct hermes_sem hermes_sem_t;
 
-/* Returns NULL if the runtime allocator is exhausted (always possible when
- * a memory-profile import -- 'light'/'medium'/'heavy' -- is active; see
- * docs/raw/hermes_mempool.en.md). Unlike hermes_thread_create, this does
- * NOT abort for you -- check the return value. */
+/* Returns NULL if there is no free memory left. Unlike
+ * hermes_thread_create, this does NOT abort for you -- check the return
+ * value. */
 hermes_sem_t *hermes_sem_create(long initial_count);
 void hermes_sem_destroy(hermes_sem_t *sem);
 
