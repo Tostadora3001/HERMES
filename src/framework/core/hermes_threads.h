@@ -25,16 +25,17 @@
 
 #include "hermes_thread.h"
 #include "hermes_sem.h"
+#include "hermes_mutex.h"
 #include "hermes_device_thread.h"
 
-typedef hermes_thread_t *hermes_thread_handle_t;
 typedef hermes_sem_t *hermes_sem_handle_t;
+typedef hermes_mutex_t *hermes_mutex_handle_t;
 
 /* --- creating ------------------------------------------------------- */
 
 /* Default memory sizes (per target, see hermes_thread.h). */
 static inline hermes_thread_handle_t thread_start(hermes_thread_fn fn, long arg) {
-    return hermes_thread_create(fn, arg);
+    return hermes_device_handle(&hermes_thread_create(fn, arg)->device);
 }
 
 /* Explicit heap/stack split. */
@@ -43,8 +44,7 @@ static inline hermes_thread_handle_t thread_start_ex(hermes_thread_fn fn, long a
     hermes_thread_attr_t attr;
     attr.heap_size = (size_t)heap_size;
     attr.stack_size = (size_t)stack_size;
-    attr.name = NULL;
-    return hermes_thread_create_ex(fn, arg, &attr);
+    return hermes_device_handle(&hermes_thread_create_ex(fn, arg, &attr)->device);
 }
 
 /* The thread's identity is assigned automatically by the runtime when it is
@@ -54,7 +54,8 @@ static inline hermes_thread_handle_t thread_start_ex(hermes_thread_fn fn, long a
  * the same `arg` (it's just user data passed to the entry function), and
  * that must not be confused with "same thread". Use thread_id()/
  * thread_self_id() whenever code needs to tell threads apart. */
-static inline long thread_id(hermes_thread_handle_t t) {
+static inline long thread_id(hermes_thread_handle_t h_t) {
+    hermes_thread_t *t = HERMES_THREAD_GET(h_t, "id");
     return (long)hermes_thread_id(t);
 }
 
@@ -64,14 +65,30 @@ static inline long thread_self_id(void) {
 
 /* --- running and waiting -------------------------------------------- */
 
-static inline void thread_run(hermes_thread_handle_t t) { hermes_thread_run(t); }
-static inline void thread_launch(hermes_thread_handle_t t) { hermes_thread_launch(t); }
-static inline void thread_launch_on(hermes_thread_handle_t t, long core) {
+static inline void thread_run(hermes_thread_handle_t h_t) {
+    hermes_thread_t *t = HERMES_THREAD_GET(h_t, "run");
+    hermes_thread_run(t);
+}
+static inline void thread_launch(hermes_thread_handle_t h_t) {
+    hermes_thread_t *t = HERMES_THREAD_GET(h_t, "launch");
+    hermes_thread_launch(t);
+}
+static inline void thread_launch_on(hermes_thread_handle_t h_t, long core) {
+    hermes_thread_t *t = HERMES_THREAD_GET(h_t, "launch_on");
     hermes_thread_launch_on(t, (int)core);
 }
-static inline void thread_wait(hermes_thread_handle_t t) { hermes_thread_wait(t); }
-static inline void thread_join(hermes_thread_handle_t t) { hermes_thread_wait(t); } /* old name */
-static inline bool thread_done(hermes_thread_handle_t t) { return hermes_thread_done(t) != 0; }
+static inline void thread_wait(hermes_thread_handle_t h_t) {
+    hermes_thread_t *t = HERMES_THREAD_GET(h_t, "wait");
+    hermes_thread_wait(t);
+}
+static inline void thread_join(hermes_thread_handle_t h_t) {
+    hermes_thread_t *t = HERMES_THREAD_GET(h_t, "join");
+    hermes_thread_wait(t);
+} /* old name */
+static inline bool thread_done(hermes_thread_handle_t h_t) {
+    hermes_thread_t *t = HERMES_THREAD_GET(h_t, "done");
+    return hermes_thread_done(t) != 0;
+}
 
 /* Give control back to whoever ran this thread (no-op on main). */
 static inline void thread_yield(void) {
@@ -80,10 +97,22 @@ static inline void thread_yield(void) {
 
 /* --- stopping -------------------------------------------------------- */
 
-static inline void thread_pause(hermes_thread_handle_t t) { hermes_thread_pause(t); }
-static inline void thread_resume(hermes_thread_handle_t t) { hermes_thread_resume(t); }
-static inline void thread_abort(hermes_thread_handle_t t) { hermes_thread_abort(t); }
-static inline void thread_destroy(hermes_thread_handle_t t) { hermes_thread_destroy(t); }
+static inline void thread_pause(hermes_thread_handle_t h_t) {
+    hermes_thread_t *t = HERMES_THREAD_GET(h_t, "pause");
+    hermes_thread_pause(t);
+}
+static inline void thread_resume(hermes_thread_handle_t h_t) {
+    hermes_thread_t *t = HERMES_THREAD_GET(h_t, "resume");
+    hermes_thread_resume(t);
+}
+static inline void thread_abort(hermes_thread_handle_t h_t) {
+    hermes_thread_t *t = HERMES_THREAD_GET(h_t, "abort");
+    hermes_thread_abort(t);
+}
+static inline void thread_destroy(hermes_thread_handle_t h_t) {
+    hermes_thread_t *t = HERMES_THREAD_GET(h_t, "destroy");
+    hermes_thread_destroy(t);
+}
 
 /* --- cores ----------------------------------------------------------- */
 
@@ -112,5 +141,24 @@ static inline bool sem_try_wait(hermes_sem_handle_t s) {
 static inline void sem_destroy(hermes_sem_handle_t s) {
     hermes_sem_destroy(s);
 }
+
+/* priority inheritance through a semaphore (under hermes_os; see
+ * hermes_sem.h): the holders of its tokens, and/or the thread that
+ * signals it */
+static inline void sem_inherit_holders(hermes_sem_handle_t s) {
+    hermes_sem_inherit_holders(s);
+}
+
+static inline void sem_signaled_by(hermes_sem_handle_t s, hermes_thread_handle_t h_t) {
+    hermes_sem_signaled_by(s, HERMES_THREAD_GET(h_t, "sem_signaled_by"));
+}
+
+/* --- mutexes (an owner; priority inheritance under hermes_os) -------- */
+
+static inline hermes_mutex_handle_t mutex_create(void) { return hermes_mutex_create(); }
+static inline void mutex_lock(hermes_mutex_handle_t m) { hermes_mutex_lock(m); }
+static inline bool mutex_try_lock(hermes_mutex_handle_t m) { return hermes_mutex_try_lock(m); }
+static inline void mutex_unlock(hermes_mutex_handle_t m) { hermes_mutex_unlock(m); }
+static inline void mutex_destroy(hermes_mutex_handle_t m) { hermes_mutex_destroy(m); }
 
 #endif

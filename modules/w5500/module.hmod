@@ -1,0 +1,10 @@
+# WIZnet W5500: Ethernet with the TCP/IP stack in the chip, over SPI.
+# It gives hermes_net an interface: device eth = w5500(chip, "192.168.1.50").
+name           = w5500
+description    = W5500 Ethernet chip (SPI): TCP and UDP sockets for hermes_net
+archs          = native avr
+drivers        = spi gpio timer
+libraries      = hermes_net hermes_spi
+device         = net ctor=w5500 type=hermes_device_net_handle_t
+sources        = w5500.c
+sources.native = w5500_mock.c w5500_virtual.c

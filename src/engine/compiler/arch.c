@@ -4,7 +4,7 @@
 const HermesArchProfile HERMES_ARCH_PROFILES[] = {
     { "native", "gcc",     "-pthread", NULL,        "hermes_ctx_x86_64.S", "",     "uno" },
     /* the chip (-mmcu) and F_CPU come from the board (boards/<board>/board.hboard) */
-    { "avr",    "avr-gcc", "-Os",      "-mmcu=%s",  "hermes_ctx_avr.S",    ".elf", "uno" },
+    { "avr",    "avr-gcc", "-Os -ffunction-sections -fdata-sections -Wl,--gc-sections",      "-mmcu=%s",  "hermes_ctx_avr.S",    ".elf", "uno" },
     /* RISC-V 32-bit microcontrollers, bare metal: picolibc as the C
      * library (approved by the user); the board's mcu is the ISA string
      * (e.g. rv32imc). What is chip-specific (startup, linker script) comes

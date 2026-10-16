@@ -219,6 +219,17 @@ Token lexer_next(Lexer *lx) {
         return make_tok(lx, kind, start, len);
     }
 
+    /* hexadecimal integer: 0x68 / 0X68 (I2C addresses, registers, masks) */
+    if (c == '0' && (peekc_at(lx, 1) == 'x' || peekc_at(lx, 1) == 'X') &&
+        isxdigit((unsigned char)peekc_at(lx, 2))) {
+        int len = 2;
+        lx->pos += 2;
+        while (isxdigit((unsigned char)peekc(lx))) { lx->pos++; len++; }
+        Token t = make_tok(lx, TOK_INT_LIT, start, len);
+        t.int_val = strtol(start, NULL, 16);
+        return t;
+    }
+
     if (isdigit((unsigned char)c)) {
         int len = 0;
         int is_float = 0;

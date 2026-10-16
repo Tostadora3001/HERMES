@@ -359,7 +359,7 @@ int main(int argc, char **argv) {
         }
         thread_prof = mp;
     }
-    char profile_cflag[160] = "";
+    char profile_cflag[512] = "";
     if (thread_prof) {
         snprintf(profile_cflag, sizeof(profile_cflag), "-DHERMES_THREAD_PROFILE=%d", thread_prof->level);
     }
@@ -368,6 +368,70 @@ int main(int argc, char **argv) {
     if (hermes_corelib_is_selected("driver:uart")) {
         size_t used = strlen(profile_cflag);
         snprintf(profile_cflag + used, sizeof(profile_cflag) - used, "%s-DHERMES_DIAG_UART",
+                 used ? " " : "");
+    }
+    /* timer roles: the timer driver can then run the system timer on any
+     * timer (src/framework/drivers/hermes_drv_timers.h) */
+    if (hermes_corelib_is_selected("hermes_timers")) {
+        size_t used = strlen(profile_cflag);
+        snprintf(profile_cflag + used, sizeof(profile_cflag) - used, "%s-DHERMES_TIMERS",
+                 used ? " " : "");
+    }
+
+    /* the I2C slave's interrupt and buffers (64 B of RAM on AVR) only if
+     * the program creates one: an ISR is always linked once it exists */
+    if (hermes_corelib_is_selected("hermes_i2c") && codegen_calls("i2c_slave")) {
+        size_t used = strlen(profile_cflag);
+        snprintf(profile_cflag + used, sizeof(profile_cflag) - used, "%s-DHERMES_I2C_SLAVE",
+                 used ? " " : "");
+    }
+
+    /* hermes_net's optional parts, only if the program uses them (each
+     * interface leaves them out otherwise: an AVR's flash): a TCP server,
+     * DNS (resolve/dns, or a host named in tcp()/send_to()), DHCP */
+    if (hermes_corelib_is_selected("hermes_net")) {
+        const char *flags[3] = {
+            codegen_calls_method("listen") ? "-DHERMES_NET_SERVER" : NULL,
+            (codegen_calls_method("resolve") || codegen_calls_method("dns") || codegen_names_hosts()) ? "-DHERMES_NET_DNS" : NULL,
+            codegen_calls_method("dhcp") ? "-DHERMES_NET_DHCP" : NULL,
+        };
+        for (int i = 0; i < 3; i++) {
+            if (!flags[i]) continue;
+            size_t used = strlen(profile_cflag);
+            snprintf(profile_cflag + used, sizeof(profile_cflag) - used, "%s%s", used ? " " : "", flags[i]);
+        }
+    }
+
+    /* device handles checked by serial number (hermes_device.h, "handles"):
+     * only if the program asks for it with device_handles_on(); otherwise
+     * a handle is the device's address (decided with the user) */
+    if (codegen_calls("device_handles_on")) {
+        size_t used = strlen(profile_cflag);
+        snprintf(profile_cflag + used, sizeof(profile_cflag) - used, "%s-DHERMES_HANDLES",
+                 used ? " " : "");
+    }
+
+    /* os_priority: the thread control block carries the use record of
+     * the fair share among equal priorities (hermes_thread.h) */
+    if (hermes_corelib_is_selected("os_priority")) {
+        size_t used = strlen(profile_cflag);
+        snprintf(profile_cflag + used, sizeof(profile_cflag) - used, "%s-DHERMES_OS_PRIORITY",
+                 used ? " " : "");
+    }
+
+    /* os_deadline: the thread control block carries the periodic fields
+     * (src/framework/core/hermes_thread.h), and mutexes order by deadline */
+    if (hermes_corelib_is_selected("os_deadline")) {
+        size_t used = strlen(profile_cflag);
+        snprintf(profile_cflag + used, sizeof(profile_cflag) - used, "%s-DHERMES_OS_DEADLINE",
+                 used ? " " : "");
+    }
+
+    /* device details: every kind's describe fills the dump's fields only
+     * when the program can dump (src/framework/devices/hermes_device.h) */
+    if (hermes_corelib_is_selected("hermes_devices")) {
+        size_t used = strlen(profile_cflag);
+        snprintf(profile_cflag + used, sizeof(profile_cflag) - used, "%s-DHERMES_DEVICES",
                  used ? " " : "");
     }
 
@@ -395,7 +459,7 @@ int main(int argc, char **argv) {
                         native_platform);
         all_includes[num_all_includes] = native_board->dir;
         /* the runtime's cores are pthreads on the host */
-        char legacy_cflags[192];
+        char legacy_cflags[544]; /* "-pthread " + profile_cflag */
         snprintf(legacy_cflags, sizeof(legacy_cflags), "%s%s",
                  hermes_corelib_needs_ctx() ? "-pthread " : "", profile_cflag);
         run_build(cc_override, legacy_cflags, all_includes, num_all_includes + 1, output_c_path,

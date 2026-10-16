@@ -9,7 +9,8 @@
  * Requires, written by the user (hepyc refuses otherwise):
  *   import hermes_threads     the mechanism
  *   import hermes_os          this
- *   import os_priority        the scheduler (one scheduler import)
+ *   import os_priority        the scheduler: exactly one of os_priority,
+ *                             os_deadline (os_deadline.h), os_cyclic
  *
  * With it imported:
  *   - every thread created belongs to the (single) process: its block is
@@ -29,7 +30,23 @@
  *         semaphore, delay_ms, any thread/device/OS function...); a loop
  *         that never calls the framework keeps its core;
  *     never between os_preempt_off() and os_preempt_on(), nor in the
- *     middle of a print() line.
+ *     middle of a print() line;
+ *   - the tick also activates the OS when it has secondary work due, and
+ *     the OS does it in a core's scheduler loop (its own context, no
+ *     thread block), outside the interrupt: waking threads asleep in
+ *     delay_ms, and the device kinds' ticks (hermes_device.h). While it
+ *     works, hermes_os_working is set and a tick only counts;
+ *   - delay_ms(n) in a process thread sleeps: BLOCKED until the OS wakes
+ *     it n ms later (checked every OS tick), instead of yielding in a
+ *     loop. With nothing to run but threads asleep, the CPU sleeps until
+ *     the next interrupt (bare metal) and it's no deadlock;
+ *   - priority inheritance (hermes_inherit.c) through every wait: the
+ *     owner of a mutex a more urgent thread waits for, a thread another
+ *     waits for in wait(), and -- if declared (hermes_sem.h) -- a
+ *     semaphore's holders or signaler run at that thread's priority (with
+ *     os_deadline, its deadline), along whole chains. A cycle of waits
+ *     through mutexes and wait() is a fatal error at once. See "Shared
+ *     resources and priorities" in docs/raw/hermes_os.en.md
  *
  *   os_region_blocks(n)   thread blocks per region (call before creating
  *                         threads; 0 = default: 10 host, 2 AVR)
@@ -42,7 +59,10 @@
  *                         asked for meanwhile happens then)
  *   os_threads()          process threads not finished yet
  *   os_regions(), os_memory()   regions and bytes the process holds
- *   t.priority(p)         0-7, higher = more urgent (default 4)
+ *   t.priority(p)         0-7, higher = more urgent (default 4); the
+ *                         effective one may be higher (mutex inheritance).
+ *                         Only with os_priority (each scheduler defines
+ *                         it; the others: fatal error)
  *   t.migrate(n)          run on core n next time
  *   t.pin(n) / t.unpin()  always on core n / anywhere
  */
@@ -60,20 +80,52 @@ long os_threads(void);
 long os_regions(void);
 long os_memory(void);
 
+/* The OS is doing its own work right now (os_work in hermes_os.c): a
+ * tick that comes meanwhile only counts. */
+extern volatile unsigned char hermes_os_working;
+
+/* For the timer driver's delay_ms (weak reference there): sleep `ms` ms if
+ * the caller is a process thread and the OS runs; 0 = not done. */
+int hermes_os_sleep_ms(unsigned long ms);
+
 void hermes_os_set_priority(hermes_thread_t *t, long p);
 void hermes_os_migrate(hermes_thread_t *t, long core);
 void hermes_os_pin(hermes_thread_t *t, long core);
 
 /* methods on a thread (`device t = thread_start(...)`) ... */
-static inline void device_thread_priority(hermes_thread_t *t, long p) { hermes_os_set_priority(t, p); }
-static inline void device_thread_migrate(hermes_thread_t *t, long core) { hermes_os_migrate(t, core); }
-static inline void device_thread_pin(hermes_thread_t *t, long core) { hermes_os_pin(t, core); }
-static inline void device_thread_unpin(hermes_thread_t *t) { hermes_os_pin(t, -1); }
+static inline void device_thread_priority(hermes_thread_handle_t h_t, long p) {
+    hermes_thread_t *t = HERMES_THREAD_GET(h_t, "priority");
+    hermes_os_set_priority(t, p);
+}
+static inline void device_thread_migrate(hermes_thread_handle_t h_t, long core) {
+    hermes_thread_t *t = HERMES_THREAD_GET(h_t, "migrate");
+    hermes_os_migrate(t, core);
+}
+static inline void device_thread_pin(hermes_thread_handle_t h_t, long core) {
+    hermes_thread_t *t = HERMES_THREAD_GET(h_t, "pin");
+    hermes_os_pin(t, core);
+}
+static inline void device_thread_unpin(hermes_thread_handle_t h_t) {
+    hermes_thread_t *t = HERMES_THREAD_GET(h_t, "unpin");
+    hermes_os_pin(t, -1);
+}
 
 /* ... and the same as functions (for hermes_thread_handle_t values) */
-static inline void thread_priority(hermes_thread_t *t, long p) { hermes_os_set_priority(t, p); }
-static inline void thread_migrate(hermes_thread_t *t, long core) { hermes_os_migrate(t, core); }
-static inline void thread_pin(hermes_thread_t *t, long core) { hermes_os_pin(t, core); }
-static inline void thread_unpin(hermes_thread_t *t) { hermes_os_pin(t, -1); }
+static inline void thread_priority(hermes_thread_handle_t h_t, long p) {
+    hermes_thread_t *t = HERMES_THREAD_GET(h_t, "priority");
+    hermes_os_set_priority(t, p);
+}
+static inline void thread_migrate(hermes_thread_handle_t h_t, long core) {
+    hermes_thread_t *t = HERMES_THREAD_GET(h_t, "migrate");
+    hermes_os_migrate(t, core);
+}
+static inline void thread_pin(hermes_thread_handle_t h_t, long core) {
+    hermes_thread_t *t = HERMES_THREAD_GET(h_t, "pin");
+    hermes_os_pin(t, core);
+}
+static inline void thread_unpin(hermes_thread_handle_t h_t) {
+    hermes_thread_t *t = HERMES_THREAD_GET(h_t, "unpin");
+    hermes_os_pin(t, -1);
+}
 
 #endif

@@ -21,6 +21,14 @@
     X(GPIO, 12) X(GPIO, 13) X(GPIO, 14) X(GPIO, 15) X(GPIO, 16) X(GPIO, 17)  \
     X(GPIO, 18) X(GPIO, 19) X(GPIO, 20) X(GPIO, 21)
 
+/* The serial port's pins (the uart device holds them: hardware conflicts,
+ * hermes_device.h). */
+#define HERMES_BOARD_UART_RX_PIN 20
+#define HERMES_BOARD_UART_TX_PIN 21
+/* Serial ports (UART driver): X(port, rx pin, tx pin); port 0 is print()'s.
+ * UART0 on GPIO20/21 (the DevKit's USB bridge); UART1 routed by the GPIO matrix to GPIO6 (RX) / GPIO7 (TX), free pins of the DevKitM-1 (GPIO8 is the LED, GPIO9 BOOT). */
+#define HERMES_BOARD_UART_PINS(X) X(0, 20, 21) X(1, 6, 7)
+
 #define HERMES_BOARD_PIN_RESERVED(n) ((n) >= 11 && (n) <= 17)
 
 #endif

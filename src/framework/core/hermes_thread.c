@@ -57,6 +57,7 @@ static void switch_point(void);
 #if defined(__AVR__)
 #include <avr/io.h>
 #include <avr/interrupt.h>
+#include <avr/sleep.h>
 #endif
 
 /* --- interrupts off/on: the framework lock on one core --------------------
@@ -160,9 +161,35 @@ void hermes_unlock(void) {
 static void notify_locked(void) { g_epoch++; }
 static void notify_work_locked(void) { g_epoch++; }
 
+static int time_will_wake(void);
+
 /* One core: if it has to wait, nothing else can ever make the change it
- * waits for (ISRs don't touch threads). */
-static void idle_wait(void) { deadlock(HERMES_PSTR("the only core is waiting for something nobody can do")); }
+ * waits for (ISRs don't touch threads) -- unless a thread sleeps under
+ * hermes_os: then the OS tick will wake it, and the CPU sleeps until the
+ * next interrupt. Lock held: interrupts are let in only while asleep (the
+ * tick's interrupt takes the lock on top of ours and leaves it as it was). */
+static void idle_wait(void) {
+    if (!time_will_wake()) deadlock(HERMES_PSTR("the only core is waiting for something nobody can do"));
+#if defined(__AVR__)
+    set_sleep_mode(SLEEP_MODE_IDLE); /* Timer0 keeps running */
+    sleep_enable();
+    sei();       /* the instruction after sei runs before any interrupt: */
+    sleep_cpu(); /* no interrupt can slip in between and be missed */
+    /* One instruction with interrupts on after waking. A real AVR serves
+     * the interrupt that woke it before the instruction after `sleep`, but
+     * simavr, if the interrupt was already pending before `sei` (the tick
+     * came while this loop had them masked), doesn't sleep and runs the
+     * `cli` first: the interrupt stayed pending for good and time stopped
+     * (found 2026-10-16 with comm_packets on the Mega: threads sleeping
+     * 1 ms again and again make this loop run thousands of times). */
+    __asm__ __volatile__("nop");
+    cli();
+    sleep_disable();
+#else
+    __asm__ __volatile__("wfi" ::: "memory"); /* wakes on a pending interrupt even with MIE off */
+    __asm__ __volatile__("csrs mstatus, 8\n\tcsrc mstatus, 8" ::: "memory"); /* let it in */
+#endif
+}
 
 #else
 
@@ -211,11 +238,14 @@ static void notify_work_locked(void) {
  * caller re-checks what it waits for). The last core to go idle waits
  * with a timeout: if every core is still idle and nothing changed, it's a
  * deadlock. */
+static int time_will_wake(void);
+
 static void idle_wait_on(pthread_cond_t *cond) {
     unsigned long seen = g_epoch;
     g_lock_depth--; /* the cond wait releases the mutex */
     g_active--;
-    if (g_active == 0) {
+    /* a thread asleep under hermes_os: the tick will wake it (and notify) */
+    if (g_active == 0 && !time_will_wake()) {
         struct timespec until;
         clock_gettime(CLOCK_REALTIME, &until);
         until.tv_nsec += 200000000L;
@@ -269,9 +299,32 @@ void hermes_runtime_free(void *p) {
  * definition, so its address is the single identity of "a thread"; it
  * also holds the list of every thread. No hardware limit. */
 static void thread_abort_entry(hermes_device_t *d);
+static void thread_describe_entry(hermes_device_t *d, hermes_device_desc_t *o);
 hermes_device_class_t hermes_device_class_thread = {
-    .name = "thread", .max_instances = 0, .abort = thread_abort_entry
+    .name = "thread", .max_instances = 0, .abort = thread_abort_entry,
+    .describe = thread_describe_entry
 };
+
+/* describe (hermes_device.h): no pins; its whole block (main: 0, its
+ * stack isn't the framework's); id, state, priority. Only with import
+ * hermes_devices: nothing else asks. */
+static void thread_describe_entry(hermes_device_t *d, hermes_device_desc_t *o) {
+    (void)d; (void)o;
+#ifdef HERMES_DEVICES /* no pins: only the dump and devices_memory() ask */
+    hermes_thread_t *t = (hermes_thread_t *)d;
+    if (!t->is_root) o->bytes = t->block_size;
+    HERMES_DEVICE_VALUE(o, "id", t->id);
+    const char *st;
+    switch (t->state) {
+    case HERMES_THREAD_READY: st = HERMES_DEVICE_STR("ready"); break;
+    case HERMES_THREAD_RUNNING: st = HERMES_DEVICE_STR("running"); break;
+    case HERMES_THREAD_BLOCKED: st = HERMES_DEVICE_STR("blocked"); break;
+    default: st = HERMES_DEVICE_STR("finished"); break;
+    }
+    HERMES_DEVICE_TEXT(o, "state", st);
+    if (!t->is_root) HERMES_DEVICE_VALUE(o, "prio", t->priority);
+#endif
+}
 
 static hermes_thread_t g_main_thread;
 HERMES_TLS_VAR(hermes_thread_t *, g_current, NULL)
@@ -341,7 +394,7 @@ static void deadlock(const char *what) {
     hermes_thread_t *self = g_current;
     while (g_lock_depth > 0) hermes_unlock();
     HERMES_DIAG("hermes: deadlock detected (%" HERMES_PS "; thread '%s' on core %d)\n",
-                what, self ? self->device.name : "?", g_core_index);
+                what, self ? hermes_device_name(&self->device) : "?", g_core_index);
     (void)what; (void)self;
     hermes_fatal();
 }
@@ -354,7 +407,8 @@ static void hermes_scheduler_bootstrap(void) {
     /* `main` is a thread too, so it occupies a registry slot like any
      * other -- the registry lists every live device, not just the ones a
      * .hepy program created explicitly. */
-    hermes_device_register_or_abort(&g_main_thread.device, &hermes_device_class_thread, "main");
+    hermes_device_register_or_abort(&g_main_thread.device, &hermes_device_class_thread);
+    hermes_device_main = &g_main_thread.device; /* its name: "main" */
     g_main_thread.state = HERMES_THREAD_RUNNING;
     g_main_thread.id = 0;
     g_main_thread.core = 0;
@@ -393,7 +447,7 @@ static int is_root_ptr(hermes_thread_t *t);
 /* Lock held (any depth). The start canary is found from the TCB's own
  * address (it sits right below it), so it's checked before trusting
  * anything inside the TCB: an overflow from below reaches the canary
- * before the TCB. Only if it's intact are the TCB's fields (size, name)
+ * before the TCB. Only if it's intact are the TCB's fields (size, id)
  * used, for the end canary and the message. */
 static void canary_check_locked(hermes_thread_t *t) {
     if (is_root_ptr(t)) return;
@@ -417,7 +471,7 @@ static void canary_check_locked(hermes_thread_t *t) {
     if (canary_ok(t->block_start + t->block_size - HERMES_CANARY_BYTES)) return;
     while (g_lock_depth > 0) hermes_unlock();
     HERMES_DIAG("hermes: memory corruption in thread '%s' (id %d): end canary overwritten\n",
-                t->device.name, t->id);
+                hermes_device_name(&t->device), t->id);
     hermes_fatal();
 }
 
@@ -515,7 +569,7 @@ static void hermes_thread_trampoline(void) {
     notify_locked();
     switch_out_locked(HERMES_THREAD_TERMINATED);
 
-    HERMES_DIAG("hermes: thread '%s' resumed after it had finished\n", self->device.name);
+    HERMES_DIAG("hermes: thread '%s' resumed after it had finished\n", hermes_device_name(&self->device));
     hermes_fatal();
 }
 
@@ -550,7 +604,7 @@ static void start_cores_locked(void) {
     g_workers_started = 1;
     for (int k = 1; k < g_core_count; k++) {
         hermes_core_t *c = &g_cores[k];
-        c->base.device.name = "core";
+        /* (not registered: hermes_device_name says "core") */
         c->base.state = HERMES_THREAD_RUNNING;
         c->base.id = -k;
         c->base.core = (signed char)k;
@@ -574,6 +628,10 @@ static void start_cores_locked(void) {
 
 hermes_os_hooks_t *hermes_os_hooks = NULL;
 
+static int time_will_wake(void) {
+    return hermes_os_hooks && hermes_os_hooks->running && hermes_os_hooks->time_will_wake();
+}
+
 /* --- giving the core back on request (see hermes_sched_request_switch) ---
  * One flag per core: the OS tick sets it. On bare metal the tick itself
  * then takes the core from the thread, right in its interrupt
@@ -583,6 +641,7 @@ hermes_os_hooks_t *hermes_os_hooks = NULL;
 static volatile unsigned char g_switch_due[HERMES_MAX_CORES];
 
 void hermes_sched_request_switch(int core) { g_switch_due[core] = 1; }
+int hermes_sched_switch_pending(int core) { return g_switch_due[core]; }
 
 /* Whether the current thread has to give its core back now. Only a
  * process thread does: never main or a core's base, never inside
@@ -662,7 +721,18 @@ static void refuse_in_process_locked(hermes_thread_t *t, const char *op) {
  * whoever was blocked waiting for it goes on, and the OS is told. */
 static int wake_one_locked(hermes_wait_queue_t *q);
 static void terminated_locked(hermes_thread_t *t) {
-    while (wake_one_locked(&t->joiners)) {}
+    for (hermes_thread_t *w; (w = t->joiners.head) != NULL;) {
+        w->blocked_on = NULL; /* no longer waiting for t: nothing to pass on */
+        w->blocked_kind = HERMES_BLOCK_NONE;
+        wake_one_locked(&t->joiners);
+    }
+    /* its mutexes go on to their waiters; it holds no semaphore and waits
+     * for nothing any more; the urgencies it passed on are taken back */
+    t->blocked_on = NULL; /* aborted while blocked: already out of its queue */
+    t->blocked_kind = HERMES_BLOCK_NONE;
+    hermes_mutex_thread_gone(t);
+    hermes_sem_thread_gone(t);
+    hermes_prio_recompute(t);
     if (t->in_process && hermes_os_hooks) hermes_os_hooks->terminated(t);
 }
 
@@ -694,7 +764,6 @@ hermes_thread_t *hermes_thread_create_ex(hermes_thread_fn entry, long arg,
     size_t heap_size = (attr && attr->heap_size) ? attr->heap_size : HERMES_THREAD_DEFAULT_HEAP_SIZE;
     if (heap_size == HERMES_THREAD_NO_HEAP) heap_size = 0;
     size_t stack_size = (attr && attr->stack_size) ? attr->stack_size : HERMES_THREAD_DEFAULT_STACK_SIZE;
-    const char *name = (attr && attr->name) ? attr->name : "thread";
 
     size_t total = HERMES_CANARY_BYTES + sizeof(hermes_thread_t) + heap_size + stack_size
                  + HERMES_CANARY_BYTES;
@@ -727,9 +796,19 @@ hermes_thread_t *hermes_thread_create_ex(hermes_thread_fn entry, long arg,
     t->joiners.tail = NULL;
     t->in_process = hermes_os_hooks ? 1 : 0;
     t->priority = 4;
+    t->base_priority = 4;
     t->pin = -1;
     t->next_core = -1;
     t->no_preempt = 0;
+    t->blocked_on = NULL;
+    t->blocked_kind = HERMES_BLOCK_NONE;
+    t->held = NULL;
+    t->wake_at = 0;
+#ifdef HERMES_OS_DEADLINE
+    t->dl_release = t->dl_abs = t->dl_eff = 0;
+    t->dl_period = t->dl_rel = t->dl_missed = 0;
+    t->dl_flags = 0;
+#endif
 
     /* highest address of the stack: right below the end canary */
     unsigned char *stack_base = block + total - HERMES_CANARY_BYTES;
@@ -738,7 +817,7 @@ hermes_thread_t *hermes_thread_create_ex(hermes_thread_fn entry, long arg,
     hermes_lock();
     t->id = g_next_id++;
     hermes_unlock();
-    hermes_device_register_or_abort(&t->device, &hermes_device_class_thread, name);
+    hermes_device_register_or_abort(&t->device, &hermes_device_class_thread);
     if (t->in_process) {
         hermes_lock();
         hermes_os_hooks->created(t); /* into the process and the scheduler */
@@ -756,7 +835,7 @@ void *hermes_thread_alloc(hermes_thread_t *t, size_t size) {
     size_t aligned = (size + (sizeof(void *) - 1)) & ~(sizeof(void *) - 1);
     if (t->heap_cursor + aligned > t->heap_limit) {
         HERMES_DIAG("hermes_thread_alloc: thread '%s' out of heap memory (%zu bytes requested)\n",
-                t->device.name, size);
+                hermes_device_name(&t->device), size);
         return NULL;
     }
     void *p = t->heap_cursor;
@@ -819,7 +898,14 @@ void hermes_thread_wait(hermes_thread_t *t) {
     if (t != g_current && !t->is_root) {
         if (g_current->in_process && t->state != HERMES_THREAD_TERMINATED) {
             /* a scheduled thread doesn't hold its core while waiting: it
-             * blocks, and the scheduler runs others meanwhile */
+             * blocks, and the scheduler runs others meanwhile. If t waits
+             * -- directly or not, through wait() and mutexes -- for this
+             * one, nobody ends: a deadlock, said at once. Otherwise t
+             * inherits this one's urgency while it waits (hermes_inherit.c) */
+            if (hermes_inherit_wait_check) hermes_inherit_wait_check(g_current, t);
+            g_current->blocked_on = t;
+            g_current->blocked_kind = HERMES_BLOCK_THREAD;
+            hermes_prio_recompute(t);
             hermes_sched_block_current(&t->joiners); /* returns unlocked */
             return;
         }
@@ -879,7 +965,7 @@ static void abort_locked(hermes_thread_t *t) {
 
     /* aborting itself: leave exactly like a thread whose function returned */
     switch_out_locked(HERMES_THREAD_TERMINATED);
-    HERMES_DIAG("hermes: thread '%s' resumed after aborting itself\n", t->device.name);
+    HERMES_DIAG("hermes: thread '%s' resumed after aborting itself\n", hermes_device_name(&t->device));
     hermes_fatal();
 }
 
@@ -979,6 +1065,14 @@ static int wake_one_locked(hermes_wait_queue_t *q) {
 
 int hermes_sched_wake_one(hermes_wait_queue_t *q) {
     return wake_one_locked(q);
+}
+
+void hermes_sched_wake(hermes_thread_t *t) {
+    if (t->state != HERMES_THREAD_BLOCKED) return;
+    if (t->queue) queue_unlink(t);
+    t->state = HERMES_THREAD_READY;
+    if (t->in_process && hermes_os_hooks && !t->paused) hermes_os_hooks->ready(t);
+    notify_locked();
 }
 
 int hermes_thread_take(hermes_thread_t *t) {

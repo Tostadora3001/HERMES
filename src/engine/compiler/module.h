@@ -51,6 +51,11 @@ typedef struct {
     const char *drivers[HERMES_MODULE_MAX_LIST]; /* core drivers it uses */
     int num_drivers;
 
+    /* core libraries it builds on (`libraries = hermes_net hermes_spi`):
+     * linked for it, as if the program imported them */
+    const char *libraries[HERMES_MODULE_MAX_LIST];
+    int num_libraries;
+
     HermesModuleSource sources[HERMES_MODULE_MAX_LIST];
     int num_sources;
 

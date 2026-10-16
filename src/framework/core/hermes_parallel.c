@@ -35,8 +35,7 @@ static hermes_thread_t *job_thread(hermes_parallel_job_t *job) {
      * of the profile is stack */
     hermes_thread_attr_t attr = {
         HERMES_THREAD_NO_HEAP,
-        HERMES_THREAD_DEFAULT_HEAP_SIZE + HERMES_THREAD_DEFAULT_STACK_SIZE,
-        "parallel"
+        HERMES_THREAD_DEFAULT_HEAP_SIZE + HERMES_THREAD_DEFAULT_STACK_SIZE
     };
     return hermes_thread_create_ex(job_entry, (long)(intptr_t)job, &attr);
 }

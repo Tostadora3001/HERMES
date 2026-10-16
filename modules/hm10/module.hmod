@@ -1,0 +1,11 @@
+# HM-10: Bluetooth Low Energy (a CC2541 with its serial service), a
+# transparent serial bridge once a central (a phone) connects.
+# device ble = hm10(serial, "name")
+name           = hm10
+description    = HM-10 Bluetooth Low Energy module on a serial port
+archs          = native avr riscv32
+drivers        = uart timer
+libraries      = hermes_uart
+device         = hm10 ctor=hm10 type=hermes_device_hm10_handle_t
+sources        = hm10.c
+sources.native = hm10_mock.c ../hc05/bt_virtual.c

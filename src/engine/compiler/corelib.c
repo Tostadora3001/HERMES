@@ -5,10 +5,11 @@
 
 static const HermesCoreLib HERMES_CORELIBS[] = {
     /* internal: everything a thread or a device needs at runtime -- the
-     * thread library (cores, run/launch/wait), semaphores,
+     * thread library (cores, run/launch/wait), semaphores, mutexes,
      * hermes_runtime_alloc (in hermes_thread.c) and the device registry. */
     { "@runtime",
       { "framework/core/hermes_thread.c", "framework/core/hermes_sem.c",
+        "framework/core/hermes_mutex.c",
         "framework/devices/hermes_device.c", "framework/core/hermes_diag.c", NULL },
       { NULL }, 1 },
 
@@ -20,6 +21,19 @@ static const HermesCoreLib HERMES_CORELIBS[] = {
                         "framework/drivers/{platform}/hermes_drv_timer_{platform}.c", NULL }, { NULL }, 0 },
     { "driver:uart",  { "framework/drivers/hermes_drv_uart.c",
                         "framework/drivers/{platform}/hermes_drv_uart_{platform}.c", NULL },  { NULL }, 0 },
+    { "driver:adc",   { "framework/drivers/hermes_drv_adc.c",
+                        "framework/drivers/{platform}/hermes_drv_adc_{platform}.c", NULL },   { NULL }, 0 },
+    { "driver:pwm",   { "framework/drivers/hermes_drv_pwm.c",
+                        "framework/drivers/{platform}/hermes_drv_pwm_{platform}.c", NULL },
+                      { "driver:gpio", "driver:timers", NULL }, 0 },
+    { "driver:spi",   { "framework/drivers/hermes_drv_spi.c",
+                        "framework/drivers/{platform}/hermes_drv_spi_{platform}.c", NULL },
+                      { "driver:gpio", NULL }, 0 }, /* chip selects, SS */
+    { "driver:i2c",   { "framework/drivers/hermes_drv_i2c.c",
+                        "framework/drivers/{platform}/hermes_drv_i2c_{platform}.c", NULL },
+                      { "driver:gpio", NULL }, 0 }, /* SDA/SCL pull-ups */
+    /* who uses each timer (roles): common code only, no platform part */
+    { "driver:timers", { "framework/drivers/hermes_drv_timers.c", NULL }, { NULL }, 0 },
 
     /* importable libraries */
     { "hermes_threads", { NULL }, { "@runtime", NULL }, 0 },
@@ -29,11 +43,29 @@ static const HermesCoreLib HERMES_CORELIBS[] = {
      * NOT pulled in automatically -- the user must write every import
      * (decided with the user, so the program states what it contains);
      * see hermes_corelib_check_rules */
-    { "hermes_os",   { "framework/core/hermes_os.c", NULL },   { "@runtime", "driver:timer", NULL }, 0 },
+    /* hermes_inherit.c: priority inheritance -- priorities only exist under
+     * the OS (weak references from the runtime, hermes_sched_internal.h) */
+    { "hermes_os",   { "framework/core/hermes_os.c", "framework/core/hermes_inherit.c", NULL },   { "@runtime", "driver:timer", NULL }, 0 },
     { "os_priority", { "framework/core/os_priority.c", NULL }, { NULL }, 0 },
+    { "os_deadline", { "framework/core/os_deadline.c", NULL }, { NULL }, 0 },
+    { "os_cyclic",   { "framework/core/os_cyclic.c", NULL },   { NULL }, 0 },
     { "hermes_devices", { NULL }, { "@runtime", NULL }, 0 },
     { "hermes_time",    { NULL }, { "driver:timer", NULL }, 0 },
     { "hermes_uart",    { NULL }, { "driver:uart", "@runtime", NULL }, 0 },
+    /* communication protocols: one import each (I2C first) */
+    { "hermes_i2c",     { NULL }, { "driver:i2c", "@runtime", NULL }, 0 },
+    { "hermes_spi",     { NULL }, { "driver:spi", "@runtime", NULL }, 0 },
+    /* TCP/UDP sockets over an interface (hermes_net.h); the host's own
+     * sockets (net_host) in hermes_net_host.c, empty on a board */
+    { "hermes_net",     { "framework/devices/hermes_net.c", "framework/devices/hermes_net_host.c", NULL },
+                        { "driver:timer", "@runtime", NULL }, 0 },
+    /* reliable packets over a serial port (its own .c: the protocol) */
+    { "hermes_packet",  { "framework/devices/hermes_packet.c", NULL },
+                        { "driver:uart", "driver:timer", "@runtime", NULL }, 0 },
+    { "hermes_adc",     { NULL }, { "driver:adc", "@runtime", NULL }, 0 },
+    { "hermes_pwm",     { NULL }, { "driver:pwm", "@runtime", NULL }, 0 },
+    /* driver:timers comes with driver:pwm */
+    { "hermes_timers",  { NULL }, { "driver:timer", "driver:pwm", "@runtime", NULL }, 0 },
 };
 #define HERMES_CORELIB_COUNT ((int)(sizeof(HERMES_CORELIBS) / sizeof(HERMES_CORELIBS[0])))
 
@@ -76,8 +108,10 @@ static const struct { const char *import; const char *needs; } HERMES_IMPORT_RUL
     { "hermes_os",   "hermes_threads" },
     { "hermes_os",   "@scheduler" },     /* one of HERMES_SCHEDULERS */
     { "os_priority", "hermes_os" },
+    { "os_deadline", "hermes_os" },
+    { "os_cyclic",   "hermes_os" },
 };
-static const char *const HERMES_SCHEDULERS[] = { "os_priority", NULL };
+static const char *const HERMES_SCHEDULERS[] = { "os_priority", "os_deadline", "os_cyclic", NULL };
 
 static int has_import(const char *const *imports, int n, const char *name) {
     for (int i = 0; i < n; i++) if (strcmp(imports[i], name) == 0) return 1;
@@ -93,7 +127,8 @@ int hermes_corelib_check_rules(const char *const *imports, int n) {
         const char *needs = HERMES_IMPORT_RULES[r].needs;
         if (strcmp(needs, "@scheduler") == 0) {
             if (schedulers == 0) {
-                fprintf(stderr, "hepyc: 'import %s' needs a scheduler: add 'import os_priority'\n",
+                fprintf(stderr, "hepyc: 'import %s' needs a scheduler: add one of 'import os_priority', "
+                        "'import os_deadline' or 'import os_cyclic'\n",
                         HERMES_IMPORT_RULES[r].import);
                 ok = 0;
             }

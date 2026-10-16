@@ -21,7 +21,7 @@
  * driver's implementation
  * "framework/drivers/{platform}/hermes_drv_gpio_{platform}.c". */
 
-#define HERMES_CORELIB_MAX_SOURCES 6
+#define HERMES_CORELIB_MAX_SOURCES 8
 #define HERMES_CORELIB_MAX_REQUIRES 4
 
 typedef struct {

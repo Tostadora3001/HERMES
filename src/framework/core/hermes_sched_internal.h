@@ -40,6 +40,75 @@ void hermes_sched_block_current(hermes_wait_queue_t *q);
  * Returns 1 if a thread was woken, 0 if `q` was empty. */
 int hermes_sched_wake_one(hermes_wait_queue_t *q);
 
+/* Called with the lock held. Same for one given BLOCKED thread, wherever
+ * it waits (taken out of its queue). */
+void hermes_sched_wake(hermes_thread_t *t);
+
+/* Priority inheritance (hermes_inherit.c), lock held. hermes_inherit.c
+ * is linked only with hermes_os (corelib.c): priorities only exist there,
+ * and a program without the OS doesn't carry the code -- hence the weak
+ * references (NULL without the OS).
+ *
+ * hermes_prio_recompute: something that decides who inherits what changed
+ * (a thread blocked or woke, a mutex or a semaphore changed hands, a base
+ * priority or deadline changed -- `t` is the thread concerned, a hint
+ * only): every process thread's effective urgency is computed again --
+ * its own, or the most urgent of the threads waiting for it, directly or
+ * through a chain of waits -- and the OS told of each change.
+ * hermes_inherit_wait_check: self (a process thread) is about to block in
+ * wait() for t: a fatal error if t waits for self, directly or not
+ * (through wait() and mutexes). */
+struct hermes_mutex;
+struct hermes_sem;
+void hermes_inherit_recompute(void) __attribute__((weak));
+void hermes_inherit_wait_check(hermes_thread_t *self, hermes_thread_t *t) __attribute__((weak));
+static inline void hermes_prio_recompute(hermes_thread_t *t) {
+    (void)t;
+    if (hermes_inherit_recompute) hermes_inherit_recompute();
+}
+/* What a blocked thread waits for (hermes_thread_t.blocked_kind). */
+#define HERMES_BLOCK_NONE   0
+#define HERMES_BLOCK_MUTEX  1
+#define HERMES_BLOCK_THREAD 2
+#define HERMES_BLOCK_SEM    3
+/* A mutex's owner (NULL = free); the k-th thread a semaphore with
+ * inheritance passes urgency to (holders, then the declared signaler;
+ * NULL = no more); the semaphore side of a thread that ends (it leaves
+ * the holder tables and stops being a declared signaler). */
+hermes_thread_t *hermes_mutex_owner(const struct hermes_mutex *m);
+hermes_thread_t *hermes_sem_target(const struct hermes_sem *s, int k);
+void hermes_sem_thread_gone(hermes_thread_t *t);
+/* The single thread x waits for through a mutex (its owner) or wait()
+ * (that thread); NULL for anything else (a semaphore: someone else may
+ * still signal it). For deadlock checks: follow it from a thread. */
+static inline hermes_thread_t *hermes_inherit_next(const hermes_thread_t *x) {
+    if (x->blocked_kind == HERMES_BLOCK_MUTEX) return hermes_mutex_owner(x->blocked_on);
+    if (x->blocked_kind == HERMES_BLOCK_THREAD) return (hermes_thread_t *)x->blocked_on;
+    return NULL;
+}
+
+/* What "more urgent" means for mutexes (who gets a mutex first, what its
+ * owner inherits): the effective priority (higher wins) -- or, with
+ * os_deadline, the effective deadline (earlier wins: deadline
+ * inheritance). EFF = effective, BASE = its own. */
+#ifdef HERMES_OS_DEADLINE
+typedef unsigned long hermes_urgency_t;
+#define HERMES_URG_EFF(t)    ((t)->dl_eff)
+#define HERMES_URG_NEW(t)    ((t)->dl_new)
+#define HERMES_URG_BASE(t)   ((t)->dl_abs)
+#define HERMES_URG_MORE(a, b) ((long)((a) - (b)) < 0)
+#else
+typedef unsigned char hermes_urgency_t;
+#define HERMES_URG_EFF(t)    ((t)->priority)
+#define HERMES_URG_NEW(t)    ((t)->prio_new)
+#define HERMES_URG_BASE(t)   ((t)->base_priority)
+#define HERMES_URG_MORE(a, b) ((a) > (b))
+#endif
+
+/* For hermes_inherit.c (lock held): t terminated holding mutexes: each
+ * goes to its next waiter (or is left free). */
+void hermes_mutex_thread_gone(hermes_thread_t *t);
+
 /* For hermes_parallel.c: if `t` is still waiting in a launch queue, takes
  * it out and binds it to the calling core. Returns 1 if taken. */
 int hermes_thread_take(hermes_thread_t *t);
@@ -58,6 +127,13 @@ typedef struct {
     void (*ready)(hermes_thread_t *t);       /* t became runnable: to the scheduler */
     void (*terminated)(hermes_thread_t *t);  /* t finished or was aborted */
     void (*core_loop)(void);  /* a core runs the scheduler until it stops */
+    /* t's effective priority changed (mutex priority inheritance): if it
+     * waits in the ready set, re-file it */
+    void (*reprioritized)(hermes_thread_t *t);
+    /* Some thread waits for time to pass (asleep in delay_ms): an idle core
+     * isn't a deadlock, the tick will wake it -- bare metal: the CPU sleeps
+     * until the next interrupt; host: no deadlock timeout. */
+    int (*time_will_wake)(void);
     volatile unsigned char running;          /* os_run() in progress */
 } hermes_os_hooks_t;
 
@@ -83,6 +159,8 @@ void hermes_thread_check_live(hermes_thread_t *t, const char *op); /* fatal if d
  * os_preempt_on()). Cleared when the core resumes a thread
  * (hermes_sched_resume). Lock held or in the tick's interrupt. */
 void hermes_sched_request_switch(int core);
+/* A request for `core` not yet acted on. */
+int hermes_sched_switch_pending(int core);
 
 /* From the tick's interrupt, lock not held: if a switch was requested for
  * this core, the interrupted thread gives it back right here -- it stays

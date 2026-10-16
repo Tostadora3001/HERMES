@@ -149,10 +149,11 @@ static void add_drivers(const HmodCtx *c, HermesModule *m, char *value) {
     }
 }
 
-/* Every device must be able to deactivate itself: the module header must
- * define `device_<kind>_abort` for each kind it declares. A textual check
+/* Every device must be able to deactivate itself and say what it holds:
+ * the module header must define `device_<kind>_abort` and
+ * `device_<kind>_describe` for each kind it declares. A textual check
  * (hepyc doesn't parse C) -- the C side is enforced again by
- * HERMES_DEVICE_CLASS, which doesn't compile without it. */
+ * HERMES_DEVICE_CLASS, which doesn't compile without them. */
 static void check_abort_methods(const HmodCtx *c, const HermesModule *m, const char *header_path) {
     FILE *f = fopen(header_path, "rb");
     if (!f) { perror(header_path); exit(1); }
@@ -165,10 +166,18 @@ static void check_abort_methods(const HmodCtx *c, const HermesModule *m, const c
     fclose(f);
     for (int i = 0; i < m->num_kinds; i++) {
         char sym[160];
+        /* a core kind (e.g. `net`: modules/w5500 adds a constructor of it)
+         * has them in the framework's header */
+        if (hermes_devicekind_is_core_kind(m->kinds[i])) continue;
         snprintf(sym, sizeof(sym), "device_%s_abort(", m->kinds[i]);
         if (!strstr(text, sym)) {
             hmod_fail(c, "the header doesn't define the mandatory method (every device must be "
                          "able to be deactivated; see docs/raw/hermes_modules.en.md)", sym);
+        }
+        snprintf(sym, sizeof(sym), "device_%s_describe(", m->kinds[i]);
+        if (!strstr(text, sym)) {
+            hmod_fail(c, "the header doesn't define the mandatory method (every device must say "
+                         "which pins and memory it holds; see docs/raw/hermes_modules.en.md)", sym);
         }
     }
     free(text);
@@ -210,6 +219,12 @@ static void parse_hmod(HermesModule *m, const char *path) {
             add_drivers(&c, m, value);
         } else if (strcmp(key, "requires") == 0) {
             m->num_requires = split_words(&c, value, m->requires, HERMES_MODULE_MAX_LIST);
+        } else if (strcmp(key, "libraries") == 0) {
+            m->num_libraries = split_words(&c, value, m->libraries, HERMES_MODULE_MAX_LIST);
+            for (int i = 0; i < m->num_libraries; i++)
+                if (!hermes_corelib_lookup(m->libraries[i]) || m->libraries[i][0] == '@' ||
+                    strncmp(m->libraries[i], "driver:", 7) == 0)
+                    hmod_fail(&c, "unknown framework library (see src/engine/compiler/corelib.c)", m->libraries[i]);
         } else if (strcmp(key, "device") == 0) {
             add_device(&c, m, value);
         } else if (strcmp(key, "sources") == 0) {
@@ -287,6 +302,7 @@ const HermesModule *hermes_module_load(const char *modules_dir, const char *name
         snprintf(key, sizeof(key), "driver:%s", m.drivers[i]);
         hermes_corelib_select(key);
     }
+    for (int i = 0; i < m.num_libraries; i++) hermes_corelib_select(m.libraries[i]);
 
     g_modules[g_module_count] = m;
     return &g_modules[g_module_count++];

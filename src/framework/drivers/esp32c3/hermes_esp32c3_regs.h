@@ -23,6 +23,17 @@
 #define UART_ID_REG             (UART0_BASE + 0x0080)
 #define UART_REG_UPDATE         (1u << 31)            /* copy the config to the UART core */
 #define UART_FIFO_SIZE          128
+/* UART1: the same registers at another base (the UART_*_REG above are
+ * UART0's; UART_PORT_REG(port, reg) moves one to the port's base) */
+#define UART1_BASE              0x60010000u
+#define UART_PORT_REG(port, reg) ((reg) - UART0_BASE + ((port) ? UART1_BASE : UART0_BASE))
+/* SYSTEM: peripheral clocks and resets (UART1's are off/held at boot) */
+#define SYSTEM_PERIP_CLK_EN0_REG 0x600C0010u
+#define SYSTEM_PERIP_RST_EN0_REG 0x600C0018u
+#define SYSTEM_UART1_BIT        (1u << 5)
+/* GPIO matrix signals of UART1 (ESP32-C3 TRM, "Peripheral Signal List") */
+#define GPIO_SIG_U1RXD_IN       9u
+#define GPIO_SIG_U1TXD_OUT      9u
 #define HERMES_ESP32C3_XTAL_HZ  40000000u
 
 /* --- SYSTIMER: 52-bit counter at 16 MHz, running since reset ------------- */
@@ -64,6 +75,8 @@
 #define GPIO_ENABLE_W1TC_REG        (GPIO_BASE + 0x0028)
 #define GPIO_IN_REG                 (GPIO_BASE + 0x003C)
 #define GPIO_FUNC_OUT_SEL_CFG_REG(n) (GPIO_BASE + 0x0554 + 4u * (n))
+#define GPIO_FUNC_IN_SEL_CFG_REG(sig) (GPIO_BASE + 0x0154 + 4u * (sig))
+#define GPIO_SIG_IN_SEL             (1u << 6)             /* the input comes through the matrix */
 #define GPIO_SIG_GPIO_OUT           0x80u                 /* output signal 128: plain GPIO */
 #define GPIO_FUNC_OEN_SEL           (1u << 9)             /* output enable from GPIO_ENABLE_REG */
 #define IO_MUX_BASE                 0x60009000u

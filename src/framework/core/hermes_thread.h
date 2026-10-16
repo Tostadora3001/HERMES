@@ -31,7 +31,8 @@ typedef enum {
     HERMES_THREAD_READY,      /* can be run (never started, or yielded) */
     HERMES_THREAD_RUNNING,    /* executing, or suspended inside a t.run()
                                  of its own (it is on its core's chain) */
-    HERMES_THREAD_BLOCKED,    /* waiting on a semaphore */
+    HERMES_THREAD_BLOCKED,    /* waiting on a semaphore, a mutex, another
+                                 thread, or asleep (delay_ms under hermes_os) */
     HERMES_THREAD_TERMINATED  /* finished or aborted, for good */
 } hermes_thread_state_t;
 
@@ -74,8 +75,8 @@ typedef struct {
 typedef struct hermes_thread {
     hermes_device_t device; /* must be first -- makes a hermes_thread_t* a
                                 valid hermes_device_t* (see hermes_device.h);
-                                device.name replaces what used to be a
-                                separate `name` field here */
+                                its name is the kind's ("thread"; "main"):
+                                hermes_device_name */
     hermes_ctx_t ctx;
     hermes_thread_state_t state;
     hermes_thread_fn entry;
@@ -124,12 +125,61 @@ typedef struct hermes_thread {
      * on that core (-1 = any); next_core = on that core next time only
      * (-1 = any). */
     unsigned char in_process;
-    unsigned char priority;
+    unsigned char priority;      /* effective: base_priority, or more while it
+                                    holds a mutex a more urgent thread wants */
+    unsigned char base_priority; /* the one set with t.priority(p) */
+#ifndef HERMES_OS_DEADLINE
+    unsigned char prio_new;      /* scratch of hermes_inherit.c */
+#endif
     signed char pin;
     signed char next_core;
     /* os_preempt_off() nesting (and print() on bare metal): while > 0 the
      * OS never takes the core from it (hermes_preempt_off/on). */
     unsigned char no_preempt;
+
+    /* Priority inheritance (hermes_inherit.c): what it's blocked on --
+     * blocked_kind HERMES_BLOCK_MUTEX (a hermes_mutex_t), _THREAD (a
+     * hermes_thread_t: wait()) or _SEM (a hermes_sem_t with inheritance);
+     * HERMES_BLOCK_NONE (0) = nothing it can pass urgency through -- and
+     * the list of the mutexes it holds. */
+    void *blocked_on;
+    unsigned char blocked_kind;
+    struct hermes_mutex *held;
+
+    /* delay_ms under hermes_os: asleep until the OS's ms counter reaches
+     * this (hermes_os.c). */
+    unsigned long wake_at;
+
+#ifdef HERMES_OS_PRIORITY
+    /* os_priority (hepyc passes -DHERMES_OS_PRIORITY with the import; no
+     * cost otherwise): the use record of the fair share among equal
+     * priorities (os_priority.c). fs_used grows by fs_inc (16384 / share)
+     * every ms the tick finds it on a core; the level it was counted at
+     * and whether it stopped asking for the CPU go in fs_flags. */
+    unsigned long fs_used;
+    unsigned short fs_inc;
+    unsigned char fs_flags;
+#endif
+
+#ifdef HERMES_OS_DEADLINE
+    /* os_deadline (hepyc passes -DHERMES_OS_DEADLINE with the import; no
+     * cost otherwise): every process thread is periodic. Times in the
+     * OS's ms (hermes_os.c). dl_abs = the deadline of the current job
+     * (period start + relative deadline); dl_eff = dl_abs, or earlier
+     * while it holds a mutex a thread with an earlier deadline waits for
+     * (inheritance: the mutex code orders by it, see HERMES_URG_* in
+     * hermes_sched_internal.h). */
+    unsigned long dl_release;  /* start of the current period */
+    unsigned long dl_abs;
+    unsigned long dl_eff;
+    unsigned long dl_new;      /* scratch of hermes_inherit.c */
+    unsigned short dl_period;  /* ms; 0 = none yet (it can't run) */
+    unsigned short dl_rel;     /* relative deadline, ms; 0 = the period */
+    unsigned short dl_missed;  /* deadlines missed (stops at 65535) */
+    unsigned short dl_cost;    /* declared cost of a job, ms; 0 = none */
+    unsigned short dl_used;    /* ms the tick found it on a core, this job */
+    unsigned char dl_flags;    /* HERMES_DL_* (os_deadline.c) */
+#endif
 
     /* (No list of all threads here: every thread, main included, is in
      * the thread kind's device list -- hermes_device_class_thread.) */
@@ -143,7 +193,6 @@ typedef struct {
     size_t heap_size;  /* 0 => HERMES_THREAD_DEFAULT_HEAP_SIZE;
                           HERMES_THREAD_NO_HEAP => none */
     size_t stack_size; /* 0 => HERMES_THREAD_DEFAULT_STACK_SIZE */
-    const char *name;  /* NULL => "thread" */
 } hermes_thread_attr_t;
 
 /* Default block of thread_start()/hermes_thread_create() and of every
@@ -258,5 +307,17 @@ int hermes_core_current(void);
 /* Cores with nothing to run right now, counting the caller's own core
  * (the caller is free to work itself). Always >= 1. */
 int hermes_cores_free(void);
+
+/* What HERMESPY holds for a thread: a handle (slot + generation, see
+ * "handles" in hermes_device.h), not a pointer. The HERMESPY-facing
+ * functions (hermes_threads.h, hermes_device_thread.h, the OS's headers)
+ * take one and resolve it first: a destroyed thread's handle -- a copy of
+ * it, even if a new thread now lives in the same memory -- or 0 is a
+ * fatal error with its message. Inside the framework, threads are
+ * pointers (h = hermes_device_handle(&t->device)). */
+typedef hermes_handle_t hermes_thread_handle_t;
+#define HERMES_THREAD_GET(h, method)                                                \
+    ((hermes_thread_t *)hermes_handle_get((h), &hermes_device_class_thread,         \
+                                          HERMES_PSTR("thread"), HERMES_PSTR(method)))
 
 #endif

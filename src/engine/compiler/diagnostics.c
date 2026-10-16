@@ -109,6 +109,7 @@ static const struct { const char *c; const char *hepy; } TYPE_NAMES[] = {
     { "struct hermes_sem *", "semaphore handle" },
     { "hermes_sem_t *", "semaphore handle" },
     { "hermes_sem_handle_t", "semaphore handle" },
+    { "hermes_handle_t", "device" },
     { "hermes_device_t *", "device" },
     { "struct hermes_device *", "device" },
     { "void (*)(long int)", "function (long) -> void" },

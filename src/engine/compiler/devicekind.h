@@ -28,9 +28,26 @@ typedef struct {
 
 #define HERMES_MAX_MODULE_DEVICE_KINDS 64
 
+/* A method that creates a device of another kind (`device imu =
+ * bus.at(0x68)`): built-in only, fixed in devicekind.c. */
+typedef struct {
+    const char *receiver_kind;
+    const char *method;
+    const char *kind;
+    const char *c_type;
+} HermesDeviceMethodKind;
+
+/* If `receiver_kind`.`method`(...) creates a device, fills *out (its
+ * kind and C type) and returns out; NULL otherwise. */
+const HermesDeviceKind *hermes_devicekind_lookup_method(const char *receiver_kind, const char *method,
+                                                        HermesDeviceKind *out);
+
 /* Returns the entry for `constructor_name`, or NULL if it isn't a
  * recognized device constructor. */
 const HermesDeviceKind *hermes_devicekind_lookup_constructor(const char *constructor_name);
+/* Is `kind` one of the framework's own (a module may add a constructor of
+ * it: modules/w5500's w5500() makes a `net`)? */
+int hermes_devicekind_is_core_kind(const char *kind);
 
 /* Adds a module-declared constructor. Strings are not copied (callers pass
  * strings that live for the whole run). Returns 0 (with a diagnostic on

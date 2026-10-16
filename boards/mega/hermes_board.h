@@ -36,4 +36,44 @@
     /* A8-A15 = 62-69 */                                                \
     X(K, 0) X(K, 1) X(K, 2) X(K, 3) X(K, 4) X(K, 5) X(K, 6) X(K, 7)
 
+/* Analog inputs (ADC driver): X(pin, channel). A0-A15 = pins 54-69 =
+ * channels 0-15. Reference: AVcc, HERMES_BOARD_ADC_VREF_MV. */
+#define HERMES_BOARD_ADC_PINS(X)                                        \
+    X(54, 0) X(55, 1) X(56, 2) X(57, 3) X(58, 4) X(59, 5) X(60, 6)      \
+    X(61, 7) X(62, 8) X(63, 9) X(64, 10) X(65, 11) X(66, 12) X(67, 13)  \
+    X(68, 14) X(69, 15)
+#define HERMES_BOARD_ADC_VREF_MV 5000
+
+/* PWM outputs (PWM driver): X(pin, timer, channel, bits), as Arduino's
+ * Mega. Timer0 (D4, D13) belongs to the system timer driver: listed so the
+ * error can say so. */
+#define HERMES_BOARD_PWM_PINS(X)                                        \
+    X(2, 3, B, 16) X(3, 3, C, 16) X(4, 0, B, 8) X(5, 3, A, 16)          \
+    X(6, 4, A, 16) X(7, 4, B, 16) X(8, 4, C, 16) X(9, 2, B, 8)          \
+    X(10, 2, A, 8) X(11, 1, A, 16) X(12, 1, B, 16) X(13, 0, A, 8)       \
+    X(44, 5, C, 16) X(45, 5, B, 16) X(46, 5, A, 16)
+
+/* The serial port's pins (the uart device holds them: hardware conflicts,
+ * hermes_device.h). */
+#define HERMES_BOARD_UART_RX_PIN 0
+#define HERMES_BOARD_UART_TX_PIN 1
+/* Serial ports (UART driver): X(port, rx pin, tx pin); port 0 is print()'s.
+ * USART0-3: RX0/TX0 = D0/D1, RX1/TX1 = D19/D18, RX2/TX2 = D17/D16, RX3/TX3 = D15/D14. */
+#define HERMES_BOARD_UART_PINS(X) X(0, 0, 1) X(1, 19, 18) X(2, 17, 16) X(3, 15, 14)
+/* The SPI bus's pins (SPI driver, master; SCK D52 = PB1, MOSI D51 = PB2, MISO D50 = PB3, SS D53 = PB0). SS must stay an
+ * output while master: the driver makes it one. */
+#define HERMES_BOARD_SPI_SCK_PIN 52
+#define HERMES_BOARD_SPI_MOSI_PIN 51
+#define HERMES_BOARD_SPI_MISO_PIN 50
+#define HERMES_BOARD_SPI_SS_PIN 53
+
+/* The I2C bus's pins (TWI: SDA = D20 = PD1, SCL = D21 = PD0; the i2c and
+ * i2c_slave devices hold them). */
+#define HERMES_BOARD_I2C_SDA_PIN 20
+#define HERMES_BOARD_I2C_SCL_PIN 21
+
+/* Hardware timers (hermes_timers): X(number, bits), numbered 0..N-1.
+ * Timer0 is the system's by default (millis, delay_ms, the OS tick). */
+#define HERMES_BOARD_TIMERS(X) X(0, 8) X(1, 16) X(2, 8) X(3, 16) X(4, 16) X(5, 16)
+
 #endif

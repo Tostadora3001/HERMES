@@ -77,7 +77,7 @@ static void emit_parallel_for(StrBuf *sb, Node *n, int depth);
  * program) and one for the function currently being emitted (reset at the
  * start of each function body). A `device`-typed value whose kind can't be
  * determined this way (e.g. a function parameter) falls back to the
- * generic `hermes_device_t *` and simply can't be used with `.method()`
+ * generic handle `hermes_handle_t` and simply can't be used with `.method()`
  * -- see docs/raw/hermes_devices.en.md. */
 typedef struct { const char *name; const char *kind; } DeviceVar;
 #define MAX_DEVICE_VARS 256
@@ -159,6 +159,46 @@ static int g_pfor_count = 0;
 static int g_parallel_imported = 0;
 static int g_in_parallel_body = 0;
 
+/* Names of the functions the program calls (codegen_calls). */
+#define CODEGEN_MAX_CALLED 256
+static const char *g_called[CODEGEN_MAX_CALLED];
+static int g_called_count;
+
+static void note_call(const char *name) {
+    for (int i = 0; i < g_called_count; i++) if (strcmp(g_called[i], name) == 0) return;
+    if (g_called_count < CODEGEN_MAX_CALLED) g_called[g_called_count++] = name;
+}
+
+int codegen_calls(const char *name) {
+    for (int i = 0; i < g_called_count; i++) if (strcmp(g_called[i], name) == 0) return 1;
+    return 0;
+}
+
+/* Methods the program calls (any kind), and whether it names a host
+ * (DNS) in one: codegen_calls_method, codegen_names_hosts. */
+static const char *g_methods[CODEGEN_MAX_CALLED];
+static int g_method_count, g_names_hosts;
+
+static void note_method(const char *name) {
+    for (int i = 0; i < g_method_count; i++) if (strcmp(g_methods[i], name) == 0) return;
+    if (g_method_count < CODEGEN_MAX_CALLED) g_methods[g_method_count++] = name;
+}
+
+int codegen_calls_method(const char *name) {
+    for (int i = 0; i < g_method_count; i++) if (strcmp(g_methods[i], name) == 0) return 1;
+    return 0;
+}
+
+int codegen_names_hosts(void) { return g_names_hosts; }
+
+/* the address argument of x.tcp(...) / x.send_to(...): a name unless it
+ * is a literal "a.b.c.d" (a variable may hold a name) */
+static void note_address_arg(Node *a) {
+    if (a->kind != NODE_LITERAL_STRING) { g_names_hosts = 1; return; }
+    for (const char *s = a->as.literal_string.value; *s; s++)
+        if (!((*s >= '0' && *s <= '9') || *s == '.')) { g_names_hosts = 1; return; }
+}
+
 static void emit_call_args(StrBuf *sb, NodeList *args) {
     for (int i = 0; i < args->count; i++) {
         if (i > 0) sb_append(sb, ", ");
@@ -191,11 +231,12 @@ static void emit_expr(StrBuf *sb, Node *n) {
         case NODE_CALL:
             if (strcmp(n->as.call.name, "thread_destroy") == 0 && n->as.call.args.count == 1 &&
                 n->as.call.args.items[0]->kind == NODE_IDENT) {
-                /* same as t.destroy(): the variable is left NULL */
+                /* same as t.destroy(): the variable is left 0 (no handle) */
                 const char *v = ident_text(n->as.call.args.items[0]->as.ident.name);
-                sb_appendf(sb, "(thread_destroy(%s), %s = NULL)", v, v);
+                sb_appendf(sb, "(thread_destroy(%s), %s = 0)", v, v);
                 break;
             }
+            note_call(n->as.call.name);
             sb_append(sb, n->as.call.name);
             sb_append(sb, "(");
             emit_call_args(sb, &n->as.call.args);
@@ -231,13 +272,22 @@ static void emit_expr(StrBuf *sb, Node *n) {
                     g_source_display, n->line, recv->as.ident.name, n->as.method_call.method_name);
                 exit(1);
             }
-            if (strcmp(kind, "thread") == 0 && strcmp(n->as.method_call.method_name, "destroy") == 0) {
-                /* t.destroy() also leaves the variable NULL (see
-                 * hermes_thread_destroy): `(device_thread_destroy(t), t = NULL)` */
+            if ((strcmp(n->as.method_call.method_name, "destroy") == 0 ||
+                 strcmp(n->as.method_call.method_name, "safe_destroy") == 0) &&
+                n->as.method_call.args.count == 0) {
+                /* x.destroy() also leaves the variable 0 (no handle: see
+                 * "handles" in hermes_device.h), for every kind
+                 * (hermes_thread_destroy, hermes_device_destroy):
+                 * `(device_<kind>_destroy(x), x = 0)`; the same for the
+                 * i2c bus's safe_destroy() */
                 const char *v = ident_text(recv->as.ident.name);
-                sb_appendf(sb, "(device_thread_destroy(%s), %s = NULL)", v, v);
+                sb_appendf(sb, "(device_%s_%s(%s), %s = 0)", kind, n->as.method_call.method_name, v, v);
                 break;
             }
+            note_method(n->as.method_call.method_name);
+            if ((strcmp(n->as.method_call.method_name, "tcp") == 0 || strcmp(n->as.method_call.method_name, "send_to") == 0) &&
+                n->as.method_call.args.count > 0)
+                note_address_arg(n->as.method_call.args.items[0]);
             sb_appendf(sb, "device_%s_%s(%s", kind, n->as.method_call.method_name, ident_text(recv->as.ident.name));
             if (n->as.method_call.args.count > 0) {
                 sb_append(sb, ", ");
@@ -298,10 +348,17 @@ static void emit_stmt(StrBuf *sb, Node *n, int depth) {
                  * generic base type (no kind tracked -> no .method()
                  * calls possible on this variable later). */
                 const HermesDeviceKind *dk = NULL;
-                if (n->as.var_decl.init && n->as.var_decl.init->kind == NODE_CALL) {
-                    dk = hermes_devicekind_lookup_constructor(n->as.var_decl.init->as.call.name);
+                HermesDeviceKind from_method;
+                Node *init = n->as.var_decl.init;
+                if (init && init->kind == NODE_CALL) {
+                    dk = hermes_devicekind_lookup_constructor(init->as.call.name);
+                } else if (init && init->kind == NODE_METHOD_CALL &&
+                           init->as.method_call.receiver->kind == NODE_IDENT) {
+                    /* a method that creates a device (bus.at(0x68)) */
+                    const char *rk = device_var_lookup(init->as.method_call.receiver->as.ident.name);
+                    if (rk) dk = hermes_devicekind_lookup_method(rk, init->as.method_call.method_name, &from_method);
                 }
-                type_name = dk ? dk->c_type : "hermes_device_t *";
+                type_name = dk ? dk->c_type : "hermes_handle_t";
                 if (dk) device_var_register(n->as.var_decl.name, dk->kind);
             }
             if (n->as.var_decl.pscope && !g_in_parallel_body) {
@@ -693,10 +750,10 @@ static void emit_func_prototype(StrBuf *sb, Node *fn) {
             Node *param = params->items[i];
             /* A `device` parameter has no recognizable constructor call to
              * infer a kind from, so it always falls back to the generic
-             * base type -- usable for device_name()/device_kind_name(), not for
+             * handle -- usable for device_name()/device_kind_name(), not for
              * .method() (see the device-kind tracking comment above). */
             const char *type_name = strcmp(param->as.param.type_name, "device") == 0
-                ? "hermes_device_t *" : param->as.param.type_name;
+                ? "hermes_handle_t" : param->as.param.type_name;
             sb_appendf(sb, "%s %s", type_name, param->as.param.name);
         }
     }
@@ -719,7 +776,7 @@ static void emit_func_def(StrBuf *sb, Node *fn) {
     for (int i = 0; i < params->count; i++) {
         Node *param = params->items[i];
         scope_push(param->as.param.name, strcmp(param->as.param.type_name, "device") == 0
-                   ? "hermes_device_t *" : param->as.param.type_name);
+                   ? "hermes_handle_t" : param->as.param.type_name);
     }
     emit_block(&body, &fn->as.func_def.body, 1);
     g_emitting_function_body = 0;

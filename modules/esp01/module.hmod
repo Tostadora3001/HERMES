@@ -1,0 +1,11 @@
+# ESP-01 (ESP8266 with Espressif's AT firmware): Wi-Fi with the TCP/IP
+# stack in the module, over a serial port.
+# It gives hermes_net an interface: device wifi = esp01(serial, "ssid", "pass").
+name           = esp01
+description    = ESP-01 Wi-Fi module (AT commands over a serial port): TCP and UDP sockets for hermes_net
+archs          = native avr
+drivers        = uart timer
+libraries      = hermes_net hermes_uart
+device         = net ctor=esp01 type=hermes_device_net_handle_t
+sources        = esp01.c
+sources.native = esp01_mock.c esp01_virtual.c

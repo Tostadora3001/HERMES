@@ -5,6 +5,6 @@
 #error "HERMES_UART_RX_BUFFER must be a power of two and <= 256"
 #endif
 
-void hermes_uart_write_str(const char *s) {
-    while (*s) hermes_uart_write_byte((uint8_t)*s++);
+void hermes_uart_port_write_str(int port, const char *s) {
+    while (*s) hermes_uart_port_write_byte(port, (uint8_t)*s++);
 }

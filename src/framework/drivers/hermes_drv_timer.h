@@ -23,6 +23,12 @@
  *
  * Host: CLOCK_MONOTONIC.
  *
+ * The system timer: Timer0 by default; `import hermes_timers` can give the
+ * role to another timer, or to none (millis then stands still and
+ * delay_ms never ends) -- see hermes_drv_timers.h and
+ * docs/raw/hermes_timers.en.md. The host mock follows the role too:
+ * without a system timer its millis/micros stand still.
+ *
  * The timer starts on first use (any function below) -- a program that
  * links this driver but never calls it never enables the interrupt.
  * Counters are uint32_t: millis wraps after ~49.7 days, micros after
@@ -34,6 +40,9 @@
  * again); on main it does nothing (there's no scheduler). The yield is a
  * weak reference, so this driver works -- as a plain busy wait -- in
  * programs that don't link the thread runtime at all.
+ * Under hermes_os, a process thread doesn't loop at all while os_run()
+ * runs: it sleeps until the OS wakes it (hermes_os_sleep_ms, also a weak
+ * reference).
  * hermes_timer_delay_us never yields: it's meant for short, precise
  * waits (e.g. a 10 us trigger pulse).
  *
@@ -66,6 +75,9 @@ uint32_t hermes_timer_micros(void);
 void hermes_timer_idle(void);
 
 void hermes_timer_set_tick(void (*fn)(void));
+
+/* 1 once the timer has started (any of the functions above was used). */
+int hermes_timer_started(void);
 
 /* Common part. */
 void hermes_timer_delay_ms(uint32_t ms);

@@ -24,6 +24,8 @@ void hermes_timer_init(void) {
     g_base = systimer_now();
 }
 
+int hermes_timer_started(void) { return g_started; }
+
 static uint64_t elapsed_us(void) {
     hermes_timer_init();
     return (systimer_now() - g_base) / SYSTIMER_TICKS_PER_US;

@@ -1,0 +1,9 @@
+# HC-05: Bluetooth classic (SPP), a transparent serial bridge.
+# device bt = hc05(serial, state_pin): what goes in one end comes out the other.
+name           = hc05
+description    = HC-05 Bluetooth module (serial port profile) on a serial port
+archs          = native avr riscv32
+drivers        = uart gpio timer
+libraries      = hermes_uart
+device         = hc05 ctor=hc05 type=hermes_device_hc05_handle_t
+sources.native = hc05_mock.c bt_virtual.c
